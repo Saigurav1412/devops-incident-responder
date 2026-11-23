@@ -1,0 +1,26 @@
+# secrets and local config
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+*.pem
+*-key.json
+service-account*.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# eval scratch (dated results ARE committed)
+evals/tmp/
+.remember/

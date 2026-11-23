@@ -1,0 +1,252 @@
+# Interface Contracts
+
+These are the seams between Om's slices and Sai's slices. Each section becomes Pydantic models in
+`src/contracts/` and both sides import from there; nobody redefines these shapes locally.
+
+**Changing a contract:** edit this file and `src/contracts/` in the same PR, tag the other person,
+and bump `CONTRACT_VERSION` in `src/contracts/__init__.py`.
+
+Status markers: **[agreed]** both signed off · **[proposed]** draft, needs the other person's review.
+
+---
+
+## 0. Topology at a glance
+
+```
+Slack ──(signed interaction webhook)──▶ Diagnoser (Cloud Run, LangGraph, diagnoser-sa)
+                                            │  ▲
+                              checkpoints + │  │ incident memory
+                                            ▼  │
+                                         Firestore
+                                            │
+                     A2A over Direct VPC egress (internal IP only)
+                                            ▼
+                              Executor (GCE VM, A2A server, executor-sa)
+                                            │  subprocess, no shell, sandbox container
+                                            ▼
+                              Target stack (docker-compose on the same VM)
+```
+
+The diagnoser never touches the VM except through A2A. The executor never calls an LLM's output
+directly as a shell string. It enforces every rule below in code, whatever the diagnoser asks.
+
+---
+
+## 1. Diagnoser graph state **[proposed]** — owner: Sai
+
+```python
+class Hypothesis(BaseModel):
+    id: str                      # "h1", "h2", ...
+    statement: str               # "postgres container is OOM-killed"
+    evidence_needed: list[str]   # diagnostic checks that would confirm/refute it
+    status: Literal["open", "confirmed", "refuted"]
+    confidence: float            # 0..1, set by the verify node
+
+class ProposedAction(BaseModel):
+    action_id: str               # uuid4, unique per proposal
+    action: str                  # name from the remediation catalog (§2.4)
+    params: dict[str, str]       # validated against that action's schema
+    rationale: str
+    rollback: str | None         # catalog action that undoes it, if any
+
+class IncidentState(TypedDict):
+    incident_id: str             # uuid4; also the LangGraph thread_id
+    alert: Alert                 # §4.1
+    recalled: list[IncidentRecord]      # from memory (§3), wrapped as data
+    hypotheses: list[Hypothesis]
+    observations: list[Observation]     # results of diagnostic calls, append-only
+    proposed: ProposedAction | None
+    approval: ApprovalDecision | None   # §4.2
+    outcome: Literal["open", "resolved", "escalated", "rejected", "budget_exceeded"]
+    budget: Budget               # counters: iterations, tool_calls, tokens, started_at
+```
+
+**Nodes (fixed names, used in traces and the code map):**
+`ingest_alert → recall_memory → plan_hypotheses → diagnose → verify_hypothesis`
+`verify_hypothesis --refuted--> plan_hypotheses` (replan, bounded by `MAX_REPLANS`)
+`verify_hypothesis --confirmed--> propose_fix → request_approval (interrupt) → execute_fix → check_health`
+`check_health --fail--> plan_hypotheses` · `check_health --pass--> save_memory → END`
+
+**Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
+`MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
+and a Slack notice.
+
+---
+
+## 2. A2A: diagnoser ↔ executor **[proposed]** — owner: Om (server), Sai (client)
+
+Use the official A2A Python SDK on both ends; pin its version in `pyproject.toml`.
+**Before Phase 1, check method names, Agent Card path and task states against the v1.0 spec at
+a2a-protocol.org** and fix this section if anything differs.
+
+### 2.1 Agent Card
+Served by the executor. Two skills:
+
+| Skill id | Purpose | Needs approval token |
+|---|---|---|
+| `diagnose` | run one read-only diagnostic command | no |
+| `remediate` | run one catalog action that changes the target | **yes** |
+
+Auth: Cloud Run calls with a Google-signed ID token for `diagnoser-sa`; the executor verifies the
+token's audience and service-account email before reading the payload. No external IP on the VM.
+
+### 2.2 Request payload (one structured data part per message)
+
+```python
+class DiagnoseRequest(BaseModel):
+    skill: Literal["diagnose"]
+    incident_id: str
+    command: list[str]           # argv, e.g. ["docker", "logs", "--tail", "200", "api"]
+    timeout_s: int = 20
+
+class RemediateRequest(BaseModel):
+    skill: Literal["remediate"]
+    incident_id: str
+    action_id: str               # same id the approval was issued for
+    action: str                  # catalog name
+    params: dict[str, str]
+    approval_token: str          # §4.3
+    idempotency_key: str         # = action_id; executor won't run the same key twice
+```
+
+### 2.3 Task outcomes
+
+| Situation | Task state | Result data |
+|---|---|---|
+| Command ran (any exit code) | `completed` | `{exit_code, stdout, stderr, truncated, duration_ms}` |
+| Validator or allowlist refused it | `rejected` | `{reason, rule_id}` — logged as a blocked unsafe action |
+| Bad / missing / expired approval token | `rejected` | `{reason: "approval_invalid"}` |
+| Executor error, timeout | `failed` | `{reason}` |
+
+`stdout`/`stderr` are capped (`MAX_OUTPUT_BYTES`, default 16 KB, tail kept). The diagnoser must treat
+them as untrusted data (they are an injection surface: log lines are attacker-controlled).
+
+### 2.4 Rules the executor enforces
+
+**Diagnostics (`diagnose`):**
+- argv only, executed with `subprocess.run(..., shell=False)` inside a sandbox container with the
+  Docker socket proxied read-only and the target's config mounted read-only
+- binary allowlist + per-binary argument rules in `src/security/allowlist.yaml`
+  (e.g. `docker` only with `ps | logs | inspect | stats --no-stream`; `curl` only to target-stack hosts)
+- any shell metacharacter, path outside the allowed roots, or unknown flag → `rejected`
+
+**Remediation (`remediate`) — catalog only, never free-form:** **[proposed list]**
+
+| Action | Params | Rollback |
+|---|---|---|
+| `restart_service` | `service` | — |
+| `restore_config` | `service`, `file` (from known-good snapshot) | `restore_config` to previous |
+| `set_env` | `service`, `key`, `value` (key allowlist) | `set_env` previous value |
+| `scale_memory_limit` | `service`, `mb` (bounded range) | previous limit |
+| `rollback_image` | `service`, `tag` (from a pinned list) | previous tag |
+| `prune_path` | `path` (under an allowlisted dir) | — |
+
+Each action validates its own params with a Pydantic model; anything else → `rejected`.
+
+---
+
+## 3. Long-term memory **[proposed]** — owner: Sai
+
+```python
+class IncidentRecord(BaseModel):
+    incident_id: str
+    created_at: datetime
+    symptoms: str                # normalized alert + key observations, written by code
+    root_cause: str              # the confirmed hypothesis statement
+    fix: ProposedAction          # what actually worked
+    verified: bool               # True only if check_health passed
+    embedding: list[float]       # of `symptoms`
+
+class IncidentMemory(Protocol):
+    def save(self, record: IncidentRecord) -> None: ...
+    def find_similar(self, symptoms: str, k: int = 3) -> list[IncidentRecord]: ...
+```
+
+- Store: Firestore collection `incidents`, vector search on `embedding`.
+- **Write rule:** only `save_memory` writes, only after `check_health` passed, so records are
+  `verified=True`. Nothing an LLM says during an incident is written directly.
+- **Read rule:** recalled records go into the prompt inside a data block marked untrusted, and a
+  recalled fix is a *hypothesis*, never an action to run without the normal approval path.
+- Ablation switch: `MEMORY_ENABLED=false` makes `find_similar` return `[]`.
+- Checkpoints (graph state) live in a separate collection `checkpoints/`. **[open]** custom
+  `BaseCheckpointSaver` vs community Firestore saver — decide in Phase 0.
+
+---
+
+## 4. Alerts and approval **[proposed]** — owner: Sai
+
+### 4.1 Alert (input to the graph)
+```python
+class Alert(BaseModel):
+    alert_id: str
+    source: Literal["healthcheck", "eval_harness", "manual"]
+    service: str
+    summary: str                 # short, written by the monitor, not the target app
+    fired_at: datetime
+```
+
+### 4.2 Approval decision (value passed to `Command(resume=...)`)
+```python
+class ApprovalDecision(BaseModel):
+    action_id: str
+    decision: Literal["approve", "reject"]
+    approver: str                # Slack user id, must be in APPROVER_ALLOWLIST
+    decided_at: datetime
+    token: str | None            # §4.3, only when approved
+```
+
+- Slack interaction requests are verified with the Slack signing secret before anything is parsed.
+- An approver not in `APPROVER_ALLOWLIST` → treated as no decision; message stays pending.
+- Pending approvals expire after `APPROVAL_TTL_S` (default 15 min) → `outcome="escalated"`.
+
+### 4.3 Approval token
+`HMAC-SHA256(APPROVAL_SIGNING_KEY, incident_id | action_id | action | canonical_json(params) | expiry)`
+
+- Minted **only** in the Slack webhook handler (and in the eval harness's scripted approver), never
+  in a node the LLM can reach.
+- The executor recomputes it from the request it received. If the diagnoser changes the action or a
+  single param after approval, the token no longer matches → `rejected`.
+- Both services read the key from Secret Manager.
+
+---
+
+## 5. Eval harness **[proposed]** — owner: Om
+
+### 5.1 Fault definition — `evals/faults/<fault_id>/fault.yaml`
+```yaml
+id: db-oom-01
+category: resource        # resource | config | dependency | network | deploy
+description: Postgres memory limit cut to 32MB; container OOM-loops
+inject: inject.sh
+oracle: oracle.sh         # exit 0 = healthy
+reset: reset.sh
+expected_fix: scale_memory_limit   # for analysis, not given to the agent
+timeout_s: 600
+repeat_of: null           # set to another fault id for memory-ablation pairs
+```
+
+### 5.2 Episode record — one JSON line in `evals/results/<YYYY-MM-DD>/episodes.jsonl`
+```json
+{"run_id": "...", "fault_id": "db-oom-01", "repeat": 2, "config": {"memory": true, "max_hypotheses": 3},
+ "resolved": true, "time_to_resolve_s": 142.3, "replans": 1, "tool_calls": 14,
+ "tokens_in": 38210, "tokens_out": 2120, "cost_usd": 0.041,
+ "blocked_actions": 0, "outcome": "resolved", "langsmith_run_url": "..."}
+```
+
+---
+
+## 6. Configuration (env vars, see `.env.example`)
+
+| Var | Used by | Notes |
+|---|---|---|
+| `OPENAI_API_KEY`, `LLM_MODEL` | diagnoser | model name never hard-coded |
+| `EMBEDDING_MODEL` | diagnoser | |
+| `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
+| `GCP_PROJECT`, `FIRESTORE_DATABASE` | diagnoser | |
+| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_CHANNEL_ID` | diagnoser | |
+| `APPROVER_ALLOWLIST` | diagnoser | comma-separated Slack user ids |
+| `APPROVAL_SIGNING_KEY` | both | Secret Manager in cloud |
+| `APPROVAL_TTL_S`, `MAX_ITERATIONS`, `MAX_REPLANS`, `MAX_TOOL_CALLS`, `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S` | diagnoser | |
+| `MEMORY_ENABLED`, `MAX_HYPOTHESES` | diagnoser | ablation switches |
+| `ALLOWED_DIAGNOSER_SA`, `MAX_OUTPUT_BYTES` | executor | |
+| `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | both | |

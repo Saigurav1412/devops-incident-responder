@@ -1,0 +1,99 @@
+# Phase Plan — Incident Responder (CSCI 599 A4)
+
+**Team:** Om (Legion / WSL2), Sai (MacBook Air M4)
+**Target submit:** Fri Dec 5, 2026 · **Hard deadline:** Tue Dec 9, 2026 (no grace days left for Om)
+**Rule for every phase:** a phase is done only when its exit criteria pass *on GCP*, not just on a laptop.
+
+Ownership is by vertical slice. Each owner builds, tests and documents their slice end to end;
+the other person reviews every PR into `main`, so both can explain the whole system in the video
+and in their own PROCESS_LOG.
+
+| Slice | Owner | Folders |
+|---|---|---|
+| Executor agent (A2A server, sandbox, action catalog), GCE VM, target stack, fault injector | Om | `src/executor/`, `src/security/`, `deploy/vm/`, `target/` |
+| Eval harness, fault catalog, ablations, adversarial runs | Om | `evals/` |
+| Diagnoser agent (LangGraph graph, planning + self-correction) | Sai | `src/diagnoser/`, `src/prompts/` |
+| Long-term memory + Firestore checkpointer | Sai | `src/memory/` |
+| Slack approval surface, Cloud Run deploy | Sai | `src/approval/`, `deploy/cloudrun/` |
+| Shared contracts, config, logging | Both (PR + review from the other) | `src/contracts/`, `src/config.py`, `src/obs/` |
+
+---
+
+## Phase 0 — Contracts and skeleton · Nov 23–24 · together
+
+Goal: both of you can work in parallel for four days without blocking each other.
+
+- [ ] Repo created, `main` protected, PRs need one review
+- [ ] `.gitattributes` (`* text=auto eol=lf`), `.gitignore`, `.env.example`, `.python-version` (3.12), `uv` lockfile
+- [ ] `AGENTS.md` + `CLAUDE.md` (one-line import) committed
+- [ ] `docs/INTERFACES.md` reviewed and agreed by both; the Pydantic models in `src/contracts/` written from it
+- [ ] GitHub Actions: `uv sync && pytest` on every PR
+- [ ] GCP: project, Firestore (Native mode), Artifact Registry, two service accounts (`diagnoser-sa`, `executor-sa`), budget alert. Credit request sent if needed.
+- [ ] Hello-world Cloud Run service deployed (proves the deploy path on day 1)
+- [ ] GitHub Project board with one issue per feature, guardrail, eval item and deliverable
+- [ ] Open decisions in `docs/DECISIONS.md` (section "Open") resolved
+
+**Exit:** contracts merged; `pytest` green in CI; hello-world reachable on Cloud Run.
+
+## Phase 1 — Both agents standing, talking over A2A · Nov 25–28
+
+Thanksgiving is Thu Nov 26. Plan for 2.5 working days, not 4.
+
+**Om**
+- [ ] GCE VM (e2-standard-2 or similar, no external IP) with Docker; target stack (`target/docker-compose.yml`: app + Postgres + Redis or similar) runs there
+- [ ] Executor A2A server: Agent Card, two skills (`diagnose`, `remediate`), task lifecycle per INTERFACES §2
+- [ ] Diagnostic command validator (allowlist parser, no shell, read-only mounts) + unit tests
+- [ ] Remediation action catalog (≥6 actions) with approval-token verification + unit tests
+- [ ] Fault injector: first 5 faults with `inject.sh` / `oracle.sh` / `reset.sh`
+
+**Sai**
+- [ ] Diagnoser LangGraph graph: nodes from INTERFACES §1, A2A client to the executor
+- [ ] Firestore checkpointer: state survives a Cloud Run redeploy mid-incident
+- [ ] Slack app: approval message, signed interaction webhook, `Command(resume=...)` back into the graph
+- [ ] Cloud Run service with Direct VPC egress to the VM's internal IP
+
+**Exit:** one seeded fault goes alert → diagnosis → Slack approval → executor fix → oracle passes, on GCP.
+
+## Phase 2 — Depth: memory, self-correction, eval · Nov 29 – Dec 1
+
+**Om**
+- [ ] Fault catalog to 20 (spread across categories in INTERFACES §5)
+- [ ] `evals/harness.py`: reset → inject → run → oracle → record JSONL; scripted approver
+- [ ] Ablation switches wired: `MEMORY_ENABLED`, `MAX_HYPOTHESES`
+- [ ] First full 20 × 1 run; triage failures with Sai
+
+**Sai**
+- [ ] Incident memory: write-after-verified-resolution, vector recall (INTERFACES §3)
+- [ ] Self-correction: hypothesis verification node, replan on mismatch, bounded loop
+- [ ] Health re-check after remediation → replan or escalate on failure
+- [ ] Budget caps (iterations, tool calls, tokens, wall-clock) enforced in graph
+
+**Exit:** 20 × 1 run completes unattended; resolution rate recorded; each feature visible in a LangSmith trace.
+
+## Phase 3 — Attacks, full eval, freeze · Dec 2–3 · together
+
+- [ ] ≥3 live prompt-injection attacks (malicious log line, poisoned memory entry, fake error / config comment), each run against the deployed system, trace saved to `evals/adversarial/`
+- [ ] Fixes or documented "known limitation" for each
+- [ ] Full eval: 20 faults × 3 runs + ablations (memory off, single hypothesis)
+- [ ] Failure-mode list from the runs
+- [ ] Cost numbers: tokens/incident from traces, VM + Cloud Run + Firestore per week
+- [ ] **Code freeze end of Dec 3.** After this, only bug fixes needed for the video.
+
+**Exit:** all numbers for the report exist in `evals/results/<date>/`.
+
+## Phase 4 — Deliverables · Dec 4–5 · together
+
+- [ ] README: setup, run, deploy, architecture diagram, **Capability-to-Code Map with line numbers (after freeze)**
+- [ ] Evaluation report (metrics with n and date, attacks, failure modes, cost)
+- [ ] Slides (≥10, all five topics, plain wording)
+- [ ] Demo video 5–10 min: every claimed feature triggers, a guardrail engages, a redeploy shows memory surviving
+- [ ] Om's `PROCESS_LOG.md` and Sai's `PROCESS_LOG.md` (200–300 words each, individual)
+- [ ] Submit Dec 5
+
+## Cut list (in order) if Phase 1 slips
+
+1. Fault catalog 20 → 12 (still × 3 runs)
+2. Remediation catalog trimmed to the actions the faults need
+3. Drop the p95 latency metric (keep p50)
+
+Never cut: ablations, the 3 live attacks, the approval-token check, the redeploy-survives demo.
