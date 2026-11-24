@@ -75,22 +75,54 @@ and a Slack notice.
 
 ## 2. A2A: diagnoser ↔ executor **[proposed]** — owner: Om (server), Sai (client)
 
-Use the official A2A Python SDK on both ends; pin its version in `pyproject.toml`.
-**Before Phase 1, check method names, Agent Card path and task states against the v1.0 spec at
-a2a-protocol.org** and fix this section if anything differs.
+**Protocol version: A2A v1.0** (stable since March 2026; spec repo `a2aproject/A2A`).
+**SDK: `a2a-sdk` 1.3.x** (official Python SDK, implements v1.0; pin `a2a-sdk[http-server]>=1.3,<2`).
+Checked 2026-11-23 against the v1.0 "what's new" doc and by installing `a2a-sdk` 1.3.1 and reading its
+types. Things that differ from older (v0.3) tutorials, which most blog posts still show:
+
+| Topic | v1.0 (use this) | v0.3 (don't) |
+|---|---|---|
+| JSON-RPC method names | `SendMessage`, `GetTask`, `CancelTask`, `ListTasks`, `SendStreamingMessage`, `SubscribeToTask` | `message/send`, `tasks/get`, … |
+| Task states | `TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_REJECTED`, `TASK_STATE_WORKING`, … (SCREAMING_SNAKE) | `completed`, `rejected`, … |
+| Part type | no `kind` field: a part is whichever of `text` / `data` / `url` / `raw` it carries, plus `mediaType` | `kind: "data"` |
+| Agent endpoint | `supportedInterfaces[{url, protocolBinding: "JSONRPC", protocolVersion: "1.0"}]` | top-level `url` |
+| Version header | client sends `A2A-Version: 1.0` on every request | — |
+| JSON field names on the wire | camelCase (`messageId`, `contextId`, `mediaType`) | — |
+
+**SDK gotcha:** `a2a-sdk` 1.x types (`Message`, `Part`, `Task`, `AgentCard`) are **protobuf messages,
+not Pydantic models**. Our own payload models in `src/contracts/` stay Pydantic; they go into a part as
+`Part(data=<protobuf Struct from model.model_dump(mode="json")>, media_type="application/json")`, and
+come out with `MessageToDict` + `Model.model_validate(...)`. Keep that conversion in one helper
+(`src/contracts/a2a_codec.py`) so neither side hand-rolls it.
 
 ### 2.1 Agent Card
-Served by the executor. Two skills:
+Served by the executor at `GET /.well-known/agent-card.json`. JSON-RPC endpoint at `/`.
+
+| Field | Value |
+|---|---|
+| `name` / `version` | `incident-executor` / package version |
+| `supportedInterfaces` | `[{url: EXECUTOR_URL, protocolBinding: "JSONRPC", protocolVersion: "1.0"}]` |
+| `capabilities` | `streaming: false`, `pushNotifications: false` (commands are short; plain `SendMessage`) |
+| `defaultInputModes` / `defaultOutputModes` | `["application/json"]` |
+| `securitySchemes` | `{"google-id-token": httpAuthSecurityScheme{scheme: "Bearer", bearerFormat: "JWT"}}` |
+| `securityRequirements` | `[{"google-id-token": []}]` |
+
+Skills (`id`, `name`, `description`, `tags` are all required in v1.0):
 
 | Skill id | Purpose | Needs approval token |
 |---|---|---|
 | `diagnose` | run one read-only diagnostic command | no |
 | `remediate` | run one catalog action that changes the target | **yes** |
 
-Auth: Cloud Run calls with a Google-signed ID token for `diagnoser-sa`; the executor verifies the
-token's audience and service-account email before reading the payload. No external IP on the VM.
+Auth: Cloud Run calls with a Google-signed ID token for `diagnoser-sa` in `Authorization: Bearer …`
+(A2A carries no credentials inside messages). The executor verifies the token's audience and
+service-account email, and rejects a missing or unsupported `A2A-Version`, before reading the payload.
+No external IP on the VM.
 
-### 2.2 Request payload (one structured data part per message)
+### 2.2 Request payload (exactly one `data` part per `Message`, `role: ROLE_USER`)
+
+The diagnoser sends one `SendMessage` per command or action. The message's `contextId` is the
+`incident_id`, so every task for one incident is grouped together on the executor.
 
 ```python
 class DiagnoseRequest(BaseModel):
@@ -111,12 +143,19 @@ class RemediateRequest(BaseModel):
 
 ### 2.3 Task outcomes
 
-| Situation | Task state | Result data |
+The executor always answers with a `Task` (never a bare `Message`), so every command has a task id
+that shows up in traces and in `ListTasks`. All three end states below are terminal in v1.0.
+
+| Situation | `status.state` | Where the result goes |
 |---|---|---|
-| Command ran (any exit code) | `completed` | `{exit_code, stdout, stderr, truncated, duration_ms}` |
-| Validator or allowlist refused it | `rejected` | `{reason, rule_id}` — logged as a blocked unsafe action |
-| Bad / missing / expired approval token | `rejected` | `{reason: "approval_invalid"}` |
-| Executor error, timeout | `failed` | `{reason}` |
+| Command ran (any exit code) | `TASK_STATE_COMPLETED` | artifact `command_result`, one `data` part: `{exit_code, stdout, stderr, truncated, duration_ms}` |
+| Validator or allowlist refused it | `TASK_STATE_REJECTED` | `status.message`, one `data` part: `{reason, rule_id}`; logged as a blocked unsafe action |
+| Bad / missing / expired approval token | `TASK_STATE_REJECTED` | `status.message`, one `data` part: `{reason: "approval_invalid"}` |
+| Executor error, timeout | `TASK_STATE_FAILED` | `status.message`, one `data` part: `{reason}` |
+
+A non-zero exit code is still `COMPLETED`: the command ran, and a failing `curl` or `docker inspect`
+is evidence for the diagnoser, not an executor failure. `REJECTED` is reserved for "the executor
+refused to run this", which is what the eval counts as a blocked unsafe action.
 
 `stdout`/`stderr` are capped (`MAX_OUTPUT_BYTES`, default 16 KB, tail kept). The diagnoser must treat
 them as untrusted data (they are an injection surface: log lines are attacker-controlled).
