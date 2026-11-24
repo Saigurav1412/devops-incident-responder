@@ -55,13 +55,19 @@ Change files in the other person's folders only through a PR they review. Shared
 
 ## Commands
 
-> Fill in during Phase 0. Every command must work on macOS and WSL2 Ubuntu.
+Every command must work on macOS and WSL2 Ubuntu. Needs `uv` (installs Python 3.12 itself).
 
 ```bash
-uv sync                      # install
-uv run pytest                # tests
-uv run python -m evals.harness --faults all --runs 3   # eval (needs GCP access)
+uv sync                      # install exact versions from uv.lock into .venv
+uv run pytest                # tests (no network, GCP, Slack or LLM needed)
+uv run ruff check .          # lint (CI fails on any finding)
+uv run ruff format .         # auto-format Python (CI runs --check; markdown is excluded)
+uv add <pkg>                 # add a dependency; commit pyproject.toml AND uv.lock together
+uv run python -m evals.harness --faults all --runs 3   # eval (not built yet)
 ```
+
+Imports: each folder under `src/` is a top-level package, so code imports `from contracts import ...`,
+`from executor import ...`, `from config import get_settings`. Shared shapes come only from `contracts`.
 
 ## Hard rules
 

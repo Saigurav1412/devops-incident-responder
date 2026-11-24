@@ -1,0 +1,79 @@
+# ---------------------------------------------------------------------------
+# Project definition for the incident responder (CSCI 599 A4 capstone).
+#
+# WHAT: one Python project, managed by `uv`, that holds every slice of the system
+#       (diagnoser, executor, security, memory, approval, contracts, evals).
+# WHY one project, not one per service: both services share `src/contracts/`, and a
+#       single lockfile means the Mac and WSL machines install exactly the same versions.
+#       Each service's Docker image will install only the extras it needs later
+#       (e.g. `uv sync --extra executor`), so sharing a repo doesn't bloat the images.
+# HOW to use: `uv sync` installs everything into .venv; `uv run pytest` runs the tests.
+# ---------------------------------------------------------------------------
+
+[project]
+name = "incident-responder"
+version = "0.1.0"
+description = "DevOps incident responder: LangGraph diagnoser + A2A executor with human approval"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+
+# Only what the shared code needs today. Each slice adds its own dependencies in its own PR
+# (e.g. Sai adds langgraph/slack-bolt; Om adds the executor's runtime deps), so nobody has to
+# review a giant dependency list up front.
+dependencies = [
+    "pydantic>=2.9,<3",            # contract models (src/contracts)
+    "pydantic-settings>=2.6,<3",   # typed env config (src/config.py)
+    "a2a-sdk[http-server]>=1.3,<2",  # A2A v1.0 SDK; checked in INTERFACES §2
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+# ---------------------------------------------------------------------------
+# Packaging. AGENTS.md puts each slice directly under src/ (src/contracts, src/executor, ...).
+# Each of those folders is its own top-level package, so code imports them as
+# `from contracts import ...`, `from executor import ...`.
+# ---------------------------------------------------------------------------
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/contracts",
+    "src/diagnoser",
+    "src/executor",
+    "src/security",
+    "src/memory",
+    "src/approval",
+    "src/obs",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/config.py" = "config.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Make `src/` importable in tests even before the project is installed.
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# Don't let `ruff format` rewrite code samples inside the docs; INTERFACES.md is hand-aligned.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+# E/F: real errors, I: import order, B: likely bugs, UP: modern syntax, S: security checks
+# (e.g. subprocess with shell=True), which matter for the executor.
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use plain `assert` (what pytest wants) and obviously fake keys/tokens as fixtures.
+"tests/**" = ["S101", "S105", "S106"]  # asserts; fake tokens/keys in fixtures
