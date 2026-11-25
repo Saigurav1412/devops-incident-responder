@@ -66,6 +66,17 @@ class IncidentState(TypedDict):
 `verify_hypothesis --refuted--> plan_hypotheses` (replan, bounded by `MAX_REPLANS`)
 `verify_hypothesis --confirmed--> propose_fix → request_approval (interrupt) → execute_fix → check_health`
 `check_health --fail--> plan_hypotheses` · `check_health --pass--> save_memory → END`
+`verify_hypothesis --still open--> diagnose` (gather more evidence; bounded by the caps below)
+`request_approval --reject--> END` (`outcome="rejected"`)
+Out of replans → `escalate → END` (`outcome="escalated"`). Any cap hit → `budget_exceeded → END`.
+
+Implemented in `src/diagnoser/` (graph.py wires these names; nodes.py has the routers).
+`incident_id` is the LangGraph `thread_id`. Approval pauses with `interrupt()`; the interrupt value is
+`{"kind": "approval_request", "incident_id", "proposed": ProposedAction as JSON}` and the graph resumes
+with `Command(resume=ApprovalDecision)`. A decision for a different `action_id`, from an approver not in
+`APPROVER_ALLOWLIST`, or an approve without a token is ignored and the graph keeps waiting. The
+diagnoser never mints tokens. Budget caps are not checked between approval and `execute_fix`, so time
+spent waiting for a human never discards an approved fix.
 
 **Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
