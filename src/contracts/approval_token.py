@@ -34,6 +34,12 @@ import time
 _SEP = b"\x1f"
 
 
+# Minimum key length. 32 bytes = 256 bits, the output size of SHA-256; a shorter HMAC key adds no
+# security headroom and a much shorter one is guessable. config.Settings.approval_key_bytes() uses
+# the same constant, so the env-var check and mint() can never disagree.
+MIN_KEY_BYTES = 32
+
+
 class ApprovalTokenError(ValueError):
     """Raised by verify() with a short machine-readable reason (used as RejectionInfo.reason)."""
 
@@ -70,9 +76,9 @@ def mint(
 ) -> str:
     """Create a token. Call ONLY from the Slack approval handler or the eval's scripted approver,
     never from code an LLM can reach (AGENTS.md rule 4)."""
-    if len(key) < 32:
+    if len(key) < MIN_KEY_BYTES:
         # A short key makes the HMAC guessable; refuse rather than run insecurely.
-        raise ValueError("approval signing key must be at least 32 bytes")
+        raise ValueError(f"approval signing key must be at least {MIN_KEY_BYTES} bytes")
     expiry = int((now if now is not None else time.time()) + ttl_s)
     tag = hmac.new(key, _message(incident_id, action_id, action, params, expiry), hashlib.sha256)
     return f"{expiry}.{tag.hexdigest()}"

@@ -258,7 +258,10 @@ signed bytes can't drift.
   no spaces. The `approval-v1` prefix means this key's signatures can't be reused for anything else.
 - Token string: `"<expiry_unix_seconds>.<hex HMAC-SHA256>"`. The expiry is readable but signed, so
   it can't be extended.
-- `APPROVAL_SIGNING_KEY` must be at least 32 bytes (`openssl rand -hex 32`); `mint` refuses shorter keys.
+- `APPROVAL_SIGNING_KEY` is **hex text**; both sides turn it into bytes only with
+  `Settings.approval_key_bytes()` (`bytes.fromhex`, whitespace stripped). It must decode to at least
+  32 bytes (64 hex chars; `python -c "import secrets; print(secrets.token_hex(32))"`); the helper and
+  `mint` both refuse shorter keys. Never `.encode()` the env value directly.
 - `verify` raises `ApprovalTokenError` with reason `approval_malformed`, `approval_invalid` or
   `approval_expired`; the executor puts that reason in `RejectionInfo.reason`. The signature is
   checked before the expiry, so a forged token always reports `approval_invalid`.
