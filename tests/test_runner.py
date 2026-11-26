@@ -135,19 +135,28 @@ def test_partial_secret_at_the_cut_is_not_leaked(tmp_path):
 
 
 def test_environment_is_minimal(tmp_path):
-    env = {"HOME": "/home/x", "OPENAI_API_KEY": "sk-should-not-leak", "SLACK_BOT_TOKEN": "xoxb-no"}
-    out = run(py_runner(tmp_path, env=env), PY, "-c", "import os; print(sorted(os.environ))")
-    keys = eval(out.result.stdout)  # noqa: S307 (our own child's repr of a list of str)
-    assert set(keys) <= {
-        "PATH",
-        "LANG",
-        "LC_ALL",
-        "HOME",
-        "DOCKER_HOST",
-        "DOCKER_CONFIG",
-        "LC_CTYPE",
+    # Probe with /usr/bin/env, not Python: on macOS a Python child adds __CF_USER_TEXT_ENCODING to
+    # its own environment at startup, which isn't something the runner passed (Sai, PR #6 review).
+    # `env` is a plain C program on both macOS and Linux and prints exactly what it was given.
+    secrets = {
+        "OPENAI_API_KEY": "sk-should-not-leak",
+        "SLACK_BOT_TOKEN": "xoxb-no",
+        "AWS_SECRET": "x",
     }
-    assert "OPENAI_API_KEY" not in keys and "SLACK_BOT_TOKEN" not in keys
+    runner = CommandRunner(
+        AllowAll(),
+        target_dir=tmp_path,
+        search_path="/usr/bin:/bin",
+        env={"HOME": "/home/x", **secrets},
+    )
+    out = run(runner, "env")
+    assert out.state == "completed", out.result
+    keys = {line.split("=", 1)[0] for line in out.result.stdout.splitlines() if "=" in line}
+    # The part that matters, checked first so it's always reported: no secret reached the child.
+    assert not keys & set(secrets), f"leaked: {keys & set(secrets)}"
+    # And nothing beyond what the runner sets or passes through on purpose.
+    assert keys <= {"PATH", "LANG", "LC_ALL", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"}, keys
+    assert {"PATH", "LANG", "LC_ALL", "HOME"} <= keys
 
 
 def test_stdin_is_closed(tmp_path):
