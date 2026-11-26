@@ -76,7 +76,18 @@ Implemented in `src/diagnoser/` (graph.py wires these names; nodes.py has the ro
 with `Command(resume=ApprovalDecision)`. A decision for a different `action_id`, from an approver not in
 `APPROVER_ALLOWLIST`, or an approve without a token is ignored and the graph keeps waiting. The
 diagnoser never mints tokens. Budget caps are not checked between approval and `execute_fix`, so time
-spent waiting for a human never discards an approved fix.
+spent waiting for a human never discards an approved fix. After `execute_fix`, the token is replaced
+with `"redacted"` in `approval` and in the stored `RemediateRequest` observation.
+
+`verify_hypothesis` treats the reasoner's assessment as a suggestion: only `status` and `confidence` of
+existing ids change; a refuted hypothesis stays refuted; unknown ids, reworded statements and omitted
+hypotheses are ignored (omitted = unchanged).
+
+`check_health` sends one fixed `DiagnoseRequest` built by code, `["curl", "-fsS", "--max-time", "5",
+HEALTH_URL]`, through the normal `diagnose` skill and records it as an observation (counts as a tool
+call). Healthy = `completed` with `exit_code == 0`; anything else (non-zero exit, rejected, failed,
+executor unreachable) is unhealthy and refutes the confirmed hypothesis. `HEALTH_URL` must be one of
+the executor allowlist's exact curl URLs.
 
 **Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
@@ -306,6 +317,7 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 | `OPENAI_API_KEY`, `LLM_MODEL` | diagnoser | model name never hard-coded |
 | `EMBEDDING_MODEL` | diagnoser | |
 | `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
+| `HEALTH_URL` | diagnoser | what `check_health` curls, as seen from the VM; default `http://127.0.0.1:8088/health`; must match the executor's curl allowlist |
 | `GCP_PROJECT`, `FIRESTORE_DATABASE` | diagnoser | |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_CHANNEL_ID` | diagnoser | |
 | `APPROVER_ALLOWLIST` | diagnoser | comma-separated Slack user ids |

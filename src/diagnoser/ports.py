@@ -1,7 +1,8 @@
-"""The diagnoser's "ports": the three things the graph needs from the outside world.
+"""The diagnoser's "ports": the things the graph needs from the outside world.
 
-WHAT: small Protocol interfaces for (1) the LLM that reasons about the incident, (2) the executor
-      that runs commands over A2A, and (3) the health check that decides whether a fix worked.
+WHAT: small Protocol interfaces for (1) the LLM that reasons about the incident and (2) the
+      executor that runs commands over A2A. (The health check is not a port: check_health builds
+      one fixed curl command itself and sends it through the executor; see nodes.py.)
 WHY:  the graph's control flow (replan loops, budget caps, the approval gate) is where most of
       the safety rules live, and it must be testable without an LLM, a VM or a network
       (AGENTS.md rules 1, 5 and 9). Keeping those dependencies behind interfaces means:
@@ -113,21 +114,6 @@ class ExecutorClient(Protocol):
 
 
 # ---------------------------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------------------------
-
-
-class HealthCheck(Protocol):
-    """Decides whether the target is healthy after a fix. True = healthy.
-
-    Kept separate from the reasoner on purpose: "did the fix work?" must be answered by a
-    deterministic check, not by an LLM reading output that an attacker may control.
-    """
-
-    async def __call__(self, state: IncidentState) -> bool: ...
-
-
-# ---------------------------------------------------------------------------------------------
 # Bundle passed to build_graph
 # ---------------------------------------------------------------------------------------------
 
@@ -139,7 +125,6 @@ class DiagnoserDeps:
     reasoner: Reasoner
     executor: ExecutorClient
     memory: IncidentMemory
-    health_check: HealthCheck
     settings: Settings
     # Injectable clock: tests move time forward to trigger the wall-clock cap deterministically.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))

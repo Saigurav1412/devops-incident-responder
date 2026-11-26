@@ -23,8 +23,10 @@ from langgraph.types import interrupt
 from contracts import (
     ApprovalDecision,
     Budget,
+    CommandResult,
     DiagnoseRequest,
     FailureInfo,
+    Hypothesis,
     IncidentRecord,
     IncidentState,
     Observation,
@@ -55,6 +57,62 @@ ROUTE_REJECTED = "rejected"
 
 # Payload type marker so the Slack side (approval/) can recognise what an interrupt is asking for.
 APPROVAL_INTERRUPT_KIND = "approval_request"
+
+# What replaces the approval token once execute_fix has used it (see execute_fix).
+REDACTED = "redacted"
+
+# check_health's curl timeout. The argv must match the executor's allowlist exactly
+# (src/security/allowlist.yaml, curl.max_time_s >= this; Om's test pins this same argv).
+HEALTH_MAX_TIME_S = 5
+
+
+def health_check_argv(health_url: str) -> list[str]:
+    """The ONE command check_health runs. Built by code from config, never by the LLM.
+
+    -f: HTTP status >= 400 becomes a non-zero exit code, so "unhealthy" = exit code != 0.
+    -sS: no progress bar, but still print errors (useful evidence in the observation).
+    """
+    return ["curl", "-fsS", "--max-time", str(HEALTH_MAX_TIME_S), health_url]
+
+
+def apply_assessment(
+    current: list[Hypothesis], assessed: list[Hypothesis]
+) -> tuple[list[Hypothesis], list[str]]:
+    """Merge the reasoner's re-scoring into the current hypotheses, under rules code enforces.
+
+    WHY: verify_hypothesis used to take the reasoner's list as-is. An LLM (or a prompt injection
+    in a log line it read) could then flip a refuted hypothesis back to open, invent new ids,
+    drop hypotheses, or reword a statement, quietly undoing the "refuted stays refuted" rule
+    that plan_hypotheses enforces. (Raised by Om on the diagnoser PR.)
+
+    Rules:
+      * only hypotheses that already exist (matched by id) can change; unknown ids are ignored
+      * only `status` and `confidence` change; `statement` / `evidence_needed` are kept
+      * a refuted hypothesis stays refuted, whatever the reasoner says
+      * a hypothesis the reasoner left out is kept unchanged (dropping is not a way to forget)
+
+    Returns (merged list in the original order, human-readable list of ignored changes).
+    """
+    by_id = {h.id: h for h in assessed}
+    known_ids = {h.id for h in current}
+    ignored = [f"unknown id {h.id}" for h in assessed if h.id not in known_ids]
+
+    merged: list[Hypothesis] = []
+    for hypothesis in current:
+        update = by_id.get(hypothesis.id)
+        if update is None:
+            merged.append(hypothesis)
+            continue
+        if hypothesis.status == "refuted" and update.status != "refuted":
+            ignored.append(f"un-refute {hypothesis.id}")
+            merged.append(hypothesis)
+            continue
+        if update.statement != hypothesis.statement:
+            ignored.append(f"reworded {hypothesis.id}")
+        merged.append(
+            hypothesis.model_copy(update={"status": update.status, "confidence": update.confidence})
+        )
+    return merged, ignored
 
 
 class DiagnoserNodes:
@@ -184,12 +242,18 @@ class DiagnoserNodes:
         }
 
     async def verify_hypothesis(self, state: IncidentState) -> dict[str, Any]:
-        """Re-score hypotheses against the evidence. One call = one iteration of the budget."""
+        """Re-score hypotheses against the evidence. One call = one iteration of the budget.
+
+        The reasoner only *suggests* new statuses; apply_assessment decides what is accepted.
+        """
         answer = await self.deps.reasoner.assess(state)
-        statuses = {h.id: h.status for h in answer.value}
-        self._log(state, "hypotheses assessed", statuses=statuses)
+        merged, ignored = apply_assessment(state["hypotheses"], answer.value)
+        if ignored:
+            # Worth a log line: repeated attempts to un-refute may be a sign of prompt injection.
+            self._log(state, "assessment changes ignored", ignored=ignored)
+        self._log(state, "hypotheses assessed", statuses={h.id: h.status for h in merged})
         return {
-            "hypotheses": answer.value,
+            "hypotheses": merged,
             "budget": self._add_budget(state, tokens=answer.tokens, iterations=1),
         }
 
@@ -275,26 +339,57 @@ class DiagnoserNodes:
         observation = await self._call_executor(state, request)
         self._log(state, "fix executed", action=proposed.action, task_state=observation.state)
         return {
-            "observations": [*state["observations"], observation],
+            "observations": [*state["observations"], self._redact_token(observation)],
+            # The token has done its job. Redact it so it doesn't ride along in every later
+            # checkpoint, trace and prompt. (Raised by Om on the diagnoser PR.) Note: the
+            # checkpoints saved *before* this node still hold it; that's unavoidable, because the
+            # token must survive a restart between approval and execution.
+            "approval": approval.model_copy(update={"token": REDACTED}),
             "budget": self._add_budget(state, tool_calls=1),
         }
 
-    async def check_health(self, state: IncidentState) -> dict[str, Any]:
-        """Ask the deterministic health check whether the fix worked.
+    @staticmethod
+    def _redact_token(observation: Observation) -> Observation:
+        """Copy of the observation with the RemediateRequest's approval_token replaced."""
+        if not isinstance(observation.request, RemediateRequest):
+            return observation
+        request = observation.request.model_copy(update={"approval_token": REDACTED})
+        return observation.model_copy(update={"request": request})
 
-        If it didn't, the hypothesis we acted on was wrong (or incomplete), so it is marked
-        refuted here. That way the replan that follows sees it as ruled out and won't propose
-        the same fix again.
+    async def check_health(self, state: IncidentState) -> dict[str, Any]:
+        """Decide, deterministically, whether the fix worked.
+
+        HOW: the graph sends one FIXED diagnostic, `curl -fsS --max-time 5 <HEALTH_URL>`,
+        through the normal executor `diagnose` skill. Healthy = the command completed with exit
+        code 0. The LLM can't influence the command or read the verdict differently.
+        WHY not oracle.sh: that is the eval's grader (it also writes to the stack). Keeping the
+        agent's check separate lets the eval measure "agent said resolved, grader disagrees".
+
+        If unhealthy, the hypothesis we acted on was wrong (or incomplete), so it is marked
+        refuted here; the replan that follows sees it as ruled out and won't propose the same fix.
         """
-        healthy = await self.deps.health_check(state)
-        self._log(state, "health checked", healthy=healthy)
-        if healthy:
-            return {}
-        hypotheses = [
-            h.model_copy(update={"status": "refuted"}) if h.status == "confirmed" else h
-            for h in state["hypotheses"]
-        ]
-        return {"hypotheses": hypotheses}
+        request = DiagnoseRequest(
+            incident_id=state["incident_id"],
+            command=health_check_argv(self.deps.settings.health_url),
+        )
+        observation = await self._call_executor(state, request)
+        healthy = (
+            observation.state == "completed"
+            and isinstance(observation.result, CommandResult)
+            and observation.result.exit_code == 0
+        )
+        self._log(state, "health checked", healthy=healthy, task_state=observation.state)
+
+        update: dict[str, Any] = {
+            "observations": [*state["observations"], observation],
+            "budget": self._add_budget(state, tool_calls=1),
+        }
+        if not healthy:
+            update["hypotheses"] = [
+                h.model_copy(update={"status": "refuted"}) if h.status == "confirmed" else h
+                for h in state["hypotheses"]
+            ]
+        return update
 
     async def save_memory(self, state: IncidentState) -> dict[str, Any]:
         """Store the verified fix for future recall, then mark the incident resolved.

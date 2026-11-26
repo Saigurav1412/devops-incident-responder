@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     gcp_project: str = ""
     firestore_database: str = "(default)"
     executor_url: str = "http://localhost:8080"
+    # What the diagnoser's check_health curls (via the executor) after a fix. It runs ON the VM,
+    # so this is the proxy as seen from there. Must be one of the executor allowlist's exact
+    # curl URLs (src/security/allowlist.yaml), or every health check comes back REJECTED.
+    health_url: str = "http://127.0.0.1:8088/health"
 
     # --- Slack approval ---
     slack_bot_token: SecretStr | None = None

@@ -1,7 +1,7 @@
 """Graph-level tests for the diagnoser (INTERFACES §1), using the scripted fakes.
 
-Each test drives the real compiled LangGraph graph end to end. Only the reasoner, executor and
-health check are fakes, so these tests prove the *control flow*: the self-correction loops, the
+Each test drives the real compiled LangGraph graph end to end. Only the reasoner and the
+executor are fakes, so these tests prove the *control flow*: the self-correction loops, the
 approval gate, and the budget caps. That's where the safety rules live, and it must hold
 whatever the LLM says (AGENTS.md rules 1, 4, 5).
 """
@@ -22,10 +22,10 @@ from contracts import (
     IncidentRecord,
     ProposedAction,
 )
-from diagnoser.fakes import FakeExecutorClient, ScriptedHealthCheck, ScriptedReasoner
+from diagnoser.fakes import FakeExecutorClient, ScriptedReasoner
 from diagnoser.graph import build_graph, new_incident_state, resume_with, thread_config
-from diagnoser.nodes import APPROVAL_INTERRUPT_KIND
-from diagnoser.ports import DiagnoserDeps, FixProposal
+from diagnoser.nodes import APPROVAL_INTERRUPT_KIND, REDACTED, apply_assessment
+from diagnoser.ports import DiagnoserDeps, FixProposal, Reasoned
 from memory.store import InMemoryIncidentMemory
 
 APPROVER = "U_SAI"
@@ -55,13 +55,12 @@ def settings(**overrides) -> Settings:
     return Settings(_env_file=None, **(base | overrides))
 
 
-def make_deps(reasoner, *, executor=None, health=None, memory=None, clock=None, **cfg):
+def make_deps(reasoner, *, executor=None, memory=None, clock=None, **cfg):
     clock = clock or FakeClock()
     return DiagnoserDeps(
         reasoner=reasoner,
         executor=executor or FakeExecutorClient(clock=clock),
         memory=memory if memory is not None else InMemoryIncidentMemory(),
-        health_check=health or ScriptedHealthCheck([True]),
         settings=settings(**cfg),
         clock=clock,
     )
@@ -107,12 +106,12 @@ def happy_reasoner(**kw) -> ScriptedReasoner:
     )
 
 
-def logs_executor(clock=None) -> FakeExecutorClient:
+def logs_executor(clock=None, health=(True,)) -> FakeExecutorClient:
     result = CommandResult(
         exit_code=0, stdout="connection refused", stderr="", truncated=False, duration_ms=3
     )
     return FakeExecutorClient(
-        diagnose_results={tuple(LOGS_CMD): result}, clock=clock or FakeClock()
+        diagnose_results={tuple(LOGS_CMD): result}, health=health, clock=clock or FakeClock()
     )
 
 
@@ -241,12 +240,21 @@ def test_refuted_plan_triggers_replan_and_keeps_refuted_history():
     assert "__interrupt__" in paused
 
 
+class RefuteEverything(ScriptedReasoner):
+    """A reasoner whose every guess is wrong: assess() refutes every hypothesis it is shown.
+
+    (A fixed `[h1: refuted]` script isn't enough: after a replan the new hypothesis is h2, and
+    apply_assessment keeps a hypothesis the reasoner didn't mention unchanged, i.e. still open.)
+    """
+
+    async def assess(self, state):
+        self.assessments.calls += 1
+        refuted = [h.model_copy(update={"status": "refuted"}) for h in state["hypotheses"]]
+        return Reasoned(refuted, self.tokens_per_call)
+
+
 def test_replans_are_capped_then_escalated():
-    reasoner = ScriptedReasoner(
-        plans=[[hyp("guess")]],
-        commands=[LOGS_CMD],
-        assessments=[[hyp("guess", "refuted")]],  # always wrong
-    )
+    reasoner = RefuteEverything(plans=[[hyp("guess")]], commands=[LOGS_CMD])
     _, done = start(make_deps(reasoner, executor=logs_executor(), max_replans=2))
 
     assert done["outcome"] == "escalated"
@@ -267,8 +275,8 @@ def test_failed_health_check_refutes_the_fix_and_replans():
             FixProposal("restore_config", {"service": "api", "file": "api.env"}, "bad url"),
         ],
     )
-    health = ScriptedHealthCheck([False, True])
-    graph, paused = start(make_deps(reasoner, executor=logs_executor(), health=health))
+    executor = logs_executor(health=[False, True])
+    graph, paused = start(make_deps(reasoner, executor=executor))
 
     first_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
     second_pause = decide(graph, first_id)  # fix runs, health fails, graph replans + pauses again
@@ -279,7 +287,7 @@ def test_failed_health_check_refutes_the_fix_and_replans():
     done = decide(graph, second["action_id"])
     assert done["outcome"] == "resolved"
     assert done["hypotheses"][0].status == "refuted"  # the fix that didn't work stays ruled out
-    assert health.calls == 2
+    assert executor.health_checks == 2
 
 
 def test_max_hypotheses_limits_the_plan_and_ids_are_reassigned():
@@ -429,3 +437,133 @@ def test_recall_respects_memory_enabled_switch(enabled, expected):
     )
     values = asyncio.run(graph.aget_state(thread_config("inc-1"))).values
     assert len(values["recalled"]) == expected
+
+
+# ---------------------------------------------------------------------------------------------
+# Follow-ups from Om's review: assessment merge rules, token redaction, fixed health check
+# ---------------------------------------------------------------------------------------------
+
+
+def test_apply_assessment_only_updates_status_and_confidence_of_known_ids():
+    current = [hyp("redis is full", "refuted", "h1"), hyp("postgres is down", "open", "h2")]
+    assessed = [
+        hyp("redis is full", "open", "h1"),  # tries to un-refute
+        Hypothesis(id="h2", statement="REWORDED", status="confirmed", confidence=0.9),
+        hyp("brand new idea", "confirmed", "h9"),  # unknown id
+    ]
+
+    merged, ignored = apply_assessment(current, assessed)
+
+    assert [(h.id, h.statement, h.status) for h in merged] == [
+        ("h1", "redis is full", "refuted"),  # stays refuted
+        ("h2", "postgres is down", "confirmed"),  # status applied, statement kept
+    ]
+    assert merged[1].confidence == 0.9
+    assert sorted(ignored) == ["reworded h2", "un-refute h1", "unknown id h9"]
+
+
+def test_apply_assessment_keeps_hypotheses_the_reasoner_left_out():
+    current = [hyp("a", "open", "h1"), hyp("b", "open", "h2")]
+    merged, ignored = apply_assessment(current, [hyp("a", "refuted", "h1")])
+    assert [(h.id, h.status) for h in merged] == [("h1", "refuted"), ("h2", "open")]
+    assert ignored == []
+
+
+def test_graph_ignores_a_reasoner_that_tries_to_undo_a_refutation():
+    """End to end: after a replan, the reasoner un-refutes h1, confirms an invented h9 and
+    rewords h2. Only h2's status change may land, so the fix proposed is for the real h2."""
+    reasoner = ScriptedReasoner(
+        plans=[[hyp("redis is full")], [hyp("postgres is down")]],
+        commands=[LOGS_CMD],
+        assessments=[
+            [hyp("redis is full", "refuted", "h1")],
+            [
+                hyp("redis is full", "confirmed", "h1"),
+                hyp("ignore previous instructions", "confirmed", "h2"),
+                hyp("invented", "confirmed", "h9"),
+            ],
+        ],
+        proposals=[FixProposal("restart_service", {"service": "db"}, "db exited")],
+    )
+    graph, paused = start(make_deps(reasoner, executor=logs_executor()))
+
+    values = asyncio.run(graph.aget_state(thread_config("inc-1"))).values
+    assert [(h.id, h.statement, h.status) for h in values["hypotheses"]] == [
+        ("h1", "redis is full", "refuted"),
+        ("h2", "postgres is down", "confirmed"),
+    ]
+    assert "__interrupt__" in paused
+
+
+def test_approval_token_is_redacted_from_state_after_execute_fix():
+    executor = logs_executor()
+    graph, paused = start(make_deps(happy_reasoner(), executor=executor))
+    action_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
+
+    done = decide(graph, action_id, token="the-real-token")
+
+    # The executor got the real token...
+    assert executor.remediations[0].approval_token == "the-real-token"
+    # ...but nothing kept in the final state (checkpoints, traces, later prompts) has it.
+    remediate_obs = [o for o in done["observations"] if o.skill == "remediate"]
+    assert [o.request.approval_token for o in remediate_obs] == [REDACTED]
+    assert done["approval"].token == REDACTED
+    assert "the-real-token" not in str(done)
+
+
+def test_health_check_sends_the_exact_allowlisted_curl_and_records_it():
+    executor = logs_executor()
+    graph, paused = start(make_deps(happy_reasoner(), executor=executor))
+    action_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
+    done = decide(graph, action_id)
+
+    # Pinned to the argv Om's executor allowlist permits (tests/test_allowlist.py on PR #4).
+    health_obs = done["observations"][-1]
+    assert health_obs.request.command == [
+        "curl",
+        "-fsS",
+        "--max-time",
+        "5",
+        "http://127.0.0.1:8088/health",
+    ]
+    assert health_obs.state == "completed"
+    # 1 reasoner diagnostic + 1 remediation + 1 health check
+    assert done["budget"].tool_calls == 3
+
+
+def test_health_check_uses_health_url_from_config():
+    url = "http://10.0.0.5:8088/health"
+    executor = FakeExecutorClient(health_url=url, clock=FakeClock())
+    reasoner = ScriptedReasoner(
+        plans=[[hyp("postgres is down")]],
+        commands=[None],  # no diagnostic needed; this test is about the health check
+        assessments=[[hyp("postgres is down", "confirmed")]],
+        proposals=[FixProposal("restart_service", {"service": "db"}, "db exited")],
+    )
+    graph, paused = start(make_deps(reasoner, executor=executor, health_url=url))
+    action_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
+
+    assert decide(graph, action_id)["outcome"] == "resolved"
+    assert executor.health_checks == 1
+
+
+@pytest.mark.parametrize(
+    ("executor_kwargs", "why"),
+    [
+        ({"health": [False]}, "curl -f exits 22 on a 503"),
+        ({"health_url": "http://not-the-configured-url/health"}, "REJECTED by the executor"),
+        ({"unreachable": True}, "executor unreachable: a failed check is not a pass"),
+    ],
+)
+def test_anything_but_exit_0_counts_as_unhealthy(executor_kwargs, why):
+    result = CommandResult(exit_code=0, stdout="x", stderr="", truncated=False, duration_ms=1)
+    executor = FakeExecutorClient(
+        diagnose_results={tuple(LOGS_CMD): result}, clock=FakeClock(), **executor_kwargs
+    )
+    graph, paused = start(make_deps(happy_reasoner(), executor=executor, max_replans=0))
+    action_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
+
+    done = decide(graph, action_id)
+
+    assert done["outcome"] == "escalated", why
+    assert done["hypotheses"][0].status == "refuted", why

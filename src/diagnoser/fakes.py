@@ -1,4 +1,4 @@
-"""Scripted stand-ins for the reasoner, the executor and the health check.
+"""Scripted stand-ins for the reasoner and the executor.
 
 WHAT: deterministic implementations of the ports in ports.py.
 WHY:  so the graph's control flow (loops, caps, approval gate) can be tested and run locally
@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
+from config import Settings
 from contracts import (
     CommandResult,
     DiagnoseRequest,
@@ -26,9 +27,25 @@ from contracts import (
     RejectionInfo,
     RemediateRequest,
 )
+from diagnoser.nodes import health_check_argv
 from diagnoser.ports import ExecutorClientError, FixProposal, Reasoned
 
 ExecutorResult = CommandResult | RejectionInfo | FailureInfo
+
+# The field default, not Settings(): Settings() would read a developer's real .env.
+DEFAULT_HEALTH_URL: str = Settings.model_fields["health_url"].default
+
+_HEALTHY = CommandResult(
+    exit_code=0, stdout='{"status":"ok"}', stderr="", truncated=False, duration_ms=4
+)
+# curl -f exits 22 on an HTTP error status (e.g. the proxy's 503).
+_UNHEALTHY = CommandResult(
+    exit_code=22,
+    stdout="",
+    stderr="curl: (22) The requested URL returned error: 503",
+    truncated=False,
+    duration_ms=4,
+)
 
 
 class _Script[T]:
@@ -90,8 +107,11 @@ def _task_state(result: ExecutorResult) -> str:
 class FakeExecutorClient:
     """An ExecutorClient that answers from tables instead of running anything.
 
-    * `diagnose_results`: exact argv tuple -> result. Unknown argv -> REJECTED, like the real
-      executor's allowlist would for anything it wasn't told about.
+    * `diagnose_results`: exact argv tuple -> result, or a list of results returned in order
+      (last one repeats). Unknown argv -> REJECTED, like the real executor's allowlist would
+      for anything it wasn't told about.
+    * `health`: what check_health's fixed curl returns on each call, in order (last repeats).
+      True = exit 0, False = exit 22 (curl -f on a 503). Default: always healthy.
     * `remediate_results`: action name -> result. Unknown action -> a successful CommandResult.
     * `unreachable=True` raises ExecutorClientError on every call (transport failure).
     Every request is recorded in `.calls` so tests can assert what was sent.
@@ -100,12 +120,24 @@ class FakeExecutorClient:
     def __init__(
         self,
         *,
-        diagnose_results: dict[tuple[str, ...], ExecutorResult] | None = None,
+        diagnose_results: dict[tuple[str, ...], ExecutorResult | Sequence[ExecutorResult]]
+        | None = None,
         remediate_results: dict[str, ExecutorResult] | None = None,
+        health: Sequence[bool] = (True,),
+        health_url: str = DEFAULT_HEALTH_URL,
         unreachable: bool = False,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        self.diagnose_results = diagnose_results or {}
+        self.health_argv = tuple(health_check_argv(health_url))
+        scripted = dict(diagnose_results or {})
+        scripted.setdefault(self.health_argv, [_HEALTHY if ok else _UNHEALTHY for ok in health])
+        # Every entry becomes a _Script, so single results and sequences behave the same way.
+        self._diagnose_scripts = {
+            argv: _Script(
+                f"diagnose{list(argv)}", result if isinstance(result, list | tuple) else [result]
+            )
+            for argv, result in scripted.items()
+        }
         self.remediate_results = remediate_results or {}
         self.unreachable = unreachable
         self.clock = clock
@@ -127,9 +159,8 @@ class FakeExecutorClient:
         self.calls.append(request)
         if self.unreachable:
             raise ExecutorClientError("connection refused (fake)")
-        result = self.diagnose_results.get(
-            tuple(request.command), RejectionInfo(reason="not_in_fake_allowlist")
-        )
+        script = self._diagnose_scripts.get(tuple(request.command))
+        result = script.next() if script else RejectionInfo(reason="not_in_fake_allowlist")
         return self._observe(request, result)
 
     async def remediate(self, request: RemediateRequest) -> Observation:
@@ -148,18 +179,17 @@ class FakeExecutorClient:
 
     @property
     def diagnostics(self) -> list[DiagnoseRequest]:
-        return [c for c in self.calls if isinstance(c, DiagnoseRequest)]
-
-
-class ScriptedHealthCheck:
-    """Returns the scripted booleans in order (last one repeats)."""
-
-    def __init__(self, results: Sequence[bool]) -> None:
-        self._script = _Script("health_check", results)
-
-    async def __call__(self, state: IncidentState) -> bool:
-        return self._script.next()
+        """Diagnostics the reasoner chose (the health check's fixed curl is excluded)."""
+        return [
+            c
+            for c in self.calls
+            if isinstance(c, DiagnoseRequest) and tuple(c.command) != self.health_argv
+        ]
 
     @property
-    def calls(self) -> int:
-        return self._script.calls
+    def health_checks(self) -> int:
+        return sum(
+            1
+            for c in self.calls
+            if isinstance(c, DiagnoseRequest) and tuple(c.command) == self.health_argv
+        )
