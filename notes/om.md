@@ -13,3 +13,5 @@
   - Caught during build: redis.conf doesn't allow end-of-line comments; `sed -i` would break single-file bind mounts (added `edit_in_place`).
 - 2026-11-26 — Sai's PR #2 review (Claude, cloud session): added `Settings.approval_key_bytes()` (hex decode, ≥32 bytes, whitespace stripped, error never echoes the value), shared `MIN_KEY_BYTES`, 10 tests, `.env.example` generation comment, INTERFACES §4.3 line.
   - Verified: 52 tests pass with `-W error`, ruff clean; mutation check (swapping hex decode for `.encode()`) makes 6 tests fail.
+- 2026-11-26 — First real run of the target stack + 5 faults (me, WSL2, Docker Engine): `up.sh` pulled images and came up healthy in ~80 s; every fault made the oracle fail (503 for db-stopped / bad-db-url / cache-maxmemory, 502 for bad-upstream / bad-image) and `reset.sh` restored health in 15–21 s each. Clears the "never run against real containers" item from the 11-23 handoff.
+  - Open: cache-maxmemory's inject was still restarting Redis when the check ran, so the 503 could partly be the restart, not the OOM. Inject scripts should verify their own fault (e.g. a SET returns OOM) before the harness starts timing.

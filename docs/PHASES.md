@@ -44,7 +44,7 @@ Thanksgiving is Thu Nov 26. Plan for 2.5 working days, not 4.
 - [ ] Executor A2A server: Agent Card, two skills (`diagnose`, `remediate`), task lifecycle per INTERFACES §2
 - [ ] Diagnostic command validator (allowlist parser, no shell, read-only mounts) + unit tests
 - [ ] Remediation action catalog (≥6 actions) with approval-token verification + unit tests
-- [x] Fault injector: first 5 faults with `inject.sh` / `oracle.sh` / `reset.sh` (static checks in CI; first local Docker run pending)
+- [x] Fault injector: first 5 faults with `inject.sh` / `oracle.sh` / `reset.sh` (first local run 2026-11-26, WSL2 Docker Engine: all 5 break the oracle, reset restores health in 15–21 s)
 
 **Sai**
 - [ ] Diagnoser LangGraph graph: nodes from INTERFACES §1, A2A client to the executor
