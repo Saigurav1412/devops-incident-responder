@@ -18,6 +18,7 @@ Newest at the bottom. Move an item from **Open** to **Decided** when both agree.
 | 2026-11-22 | Status tracked on the GitHub Project board, not a `STATUS.md` | A file both people edit every session causes daily merge conflicts |
 | 2026-11-22 | Handoff protocol (`docs/HANDOFF.md`, `/handoff`): durable knowledge goes into contracts/decisions/tests first; one note file per session with a required "NOT verified" section; readers verify notes against code | In A1/A2, summaries (and a memory-service bridge) silently dropped details that later caused bugs; the repo is also the only channel both teammates' agents can read |
 | 2026-11-26 | Diagnostics: free-form argv, validated by a default-deny grammar (`src/security/allowlist.py`); remediation: typed catalog only (§2.4) | Diagnosis needs flexible read-only commands (the "terminal control" feature); changes need a fixed, approvable shape. Proposed by Om in PR (security-allowlist); Sai reviews |
+| 2026-11-26 | Remediation on this target: `restart_service`, `restore_config`, `scale_memory_limit`, `rollback_image` enabled; `set_env` and `prune_path` disabled | The agent only sees redacted secrets, so `set_env` can't write a correct `DATABASE_URL`; `restore_config` covers env drift safely. No fault needs `prune_path`, and deletion is the riskiest action. Names stay in the catalog, so enabling later is a policy change, not a contract change |
 
 ## Open (resolve in Phase 0)
 

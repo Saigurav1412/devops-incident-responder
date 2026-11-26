@@ -45,7 +45,7 @@ Thanksgiving is Thu Nov 26. Plan for 2.5 working days, not 4.
 - [x] Diagnostic command validator (allowlist parser, no shell) + unit tests (`src/security/`, PR #4)
 - [x] Diagnostic runner: fixed PATH, minimal env, timeout kills process group, output cap, redaction (`src/executor/runner.py`; live-stack test 2026-11-26 WSL2: all 28 allowed commands exit 0, no secret leaked)
 - [ ] Sandbox container + read-only Docker socket proxy for the runner
-- [ ] Remediation action catalog (≥6 actions) with approval-token verification + unit tests
+- [x] Remediation actions with approval-token verification, param policy, idempotency + unit tests (`src/executor/remediation.py`; 4 of 6 catalog actions enabled, `set_env`/`prune_path` deliberately off; live fix-each-fault test pending Om's WSL run)
 - [x] Fault injector: first 5 faults with `inject.sh` / `oracle.sh` / `reset.sh` (first local run 2026-11-26, WSL2 Docker Engine: all 5 break the oracle, reset restores health in 15–21 s)
 
 **Sai**
