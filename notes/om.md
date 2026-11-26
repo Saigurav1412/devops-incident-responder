@@ -11,3 +11,5 @@
   - Verified in session: shellcheck clean, `docker compose config` valid, 50 tests pass, API returns 503 with short errors when deps are down and compact `{"status":"ok"...}` when up (TestClient with stubbed checks), broken image exits 1.
   - NOT verified: real container run (Docker Hub blocked in the cloud session). I need to run docs/walkthroughs/phase1-target-stack.md §6 in WSL.
   - Caught during build: redis.conf doesn't allow end-of-line comments; `sed -i` would break single-file bind mounts (added `edit_in_place`).
+- 2026-11-26 — Sai's PR #2 review (Claude, cloud session): added `Settings.approval_key_bytes()` (hex decode, ≥32 bytes, whitespace stripped, error never echoes the value), shared `MIN_KEY_BYTES`, 10 tests, `.env.example` generation comment, INTERFACES §4.3 line.
+  - Verified: 52 tests pass with `-W error`, ruff clean; mutation check (swapping hex decode for `.encode()`) makes 6 tests fail.
