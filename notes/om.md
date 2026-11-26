@@ -22,3 +22,4 @@
   - Verified: 212 tests pass with `-W error`; mutation checks: parent-only kill, no redaction, inherited PATH, skipped validator each fail a test.
   - Went wrong: my first timeout test had a quoting bug (the child script was a SyntaxError, so it "completed" instantly); rebuilt it with repr().
   - NOT verified: live-stack test (needs Docker) — I run walkthrough phase1-runner.md §5.
+- 2026-11-26 — Live-stack runner test (me, WSL2): `RUN_DOCKER_TESTS=1 uv run pytest -m docker` → 28 passed in 6.5 s. Every allowlisted argv is accepted by the real docker/redis-cli/pg_isready/nginx/curl/cat/df/free/uptime with exit 0, and the dummy DB password never appears in output (incl. `docker inspect`). Closes the "real binaries accept our argv" gap from PR #4 and the live-test item from PR #5.
