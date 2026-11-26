@@ -72,7 +72,7 @@ Out of replans → `escalate → END` (`outcome="escalated"`). Any cap hit → `
 
 Implemented in `src/diagnoser/` (graph.py wires these names; nodes.py has the routers).
 `incident_id` is the LangGraph `thread_id`. Approval pauses with `interrupt()`; the interrupt value is
-`{"kind": "approval_request", "incident_id", "proposed": ProposedAction as JSON}` and the graph resumes
+`{"kind": "approval_request", "incident_id", "proposed": ProposedAction as JSON, "requested_at": ISO-8601 UTC}` and the graph resumes
 with `Command(resume=ApprovalDecision)`. A decision for a different `action_id`, from an approver not in
 `APPROVER_ALLOWLIST`, or an approve without a token is ignored and the graph keeps waiting. The
 diagnoser never mints tokens. Budget caps are not checked between approval and `execute_fix`, so time
@@ -259,6 +259,20 @@ class ApprovalDecision(BaseModel):
 - Slack interaction requests are verified with the Slack signing secret before anything is parsed.
 - An approver not in `APPROVER_ALLOWLIST` → treated as no decision; message stays pending.
 - Pending approvals expire after `APPROVAL_TTL_S` (default 15 min) → `outcome="escalated"`.
+
+Implemented in `src/approval/` (`slack_signature.py`, `messages.py`, `handler.py`):
+- Signature: Slack's v0 scheme (`HMAC-SHA256(secret, "v0:" + timestamp + ":" + raw body)`), constant-time
+  compare, timestamps more than 5 min from now refused; an unset secret refuses everything.
+- The approval message shows LLM-written text (`rationale`, `params`) only as `plain_text`, capped, and
+  never in the notification fallback. Buttons carry only `{"incident_id", "action_id"}`; any extra
+  field in a returned value makes the click invalid.
+- A click resumes the graph only if: signed, a `block_actions` click on our approve/reject button,
+  approver allowlisted, the incident is paused on an `approval_request` interrupt, `action_id` matches
+  the current proposal, and `requested_at` is within `APPROVAL_TTL_S`. Otherwise it is ignored and the
+  incident stays paused. On approve, the token is minted over the action and params read from the
+  checkpoint, never from the click. Check-and-resume is serialised per process.
+- Not built yet: escalating on expiry *without* a click (today an expired approval just stays paused),
+  posting the message, the HTTP endpoint and Slack's 3-second ack, and cross-instance locking.
 
 ### 4.3 Approval token
 Implemented in `src/contracts/approval_token.py` (`mint`, `verify`), shared by both sides so the

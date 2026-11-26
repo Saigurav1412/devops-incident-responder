@@ -293,6 +293,10 @@ class DiagnoserNodes:
             "kind": APPROVAL_INTERRUPT_KIND,
             "incident_id": state["incident_id"],
             "proposed": proposed.model_dump(mode="json"),
+            # When the human was asked. The Slack handler refuses clicks older than
+            # APPROVAL_TTL_S (INTERFACES §4.2). LangGraph stores the payload of the interrupt
+            # that actually paused the graph, so later re-runs of this node don't move it.
+            "requested_at": self.deps.clock().isoformat(),
         }
         while True:
             decision = ApprovalDecision.model_validate(interrupt(payload))

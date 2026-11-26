@@ -31,3 +31,4 @@ Newest at the bottom. Move an item from **Open** to **Decided** when both agree.
 | LLM | own OpenAI key / ChatGPT Edu OAuth (no API key) / Gemini free tier | confirm on Piazza whether A3's "no NIM" guidance still applies |
 | Target stack contents | app + Postgres + Redis + nginx / something smaller | smallest stack that supports 20 distinct faults |
 | GCP credits | current coupon / request extra | estimate VM hours first; stop the VM when idle |
+| Escalating approvals that expire with no click (INTERFACES §4.2 → `outcome="escalated"`) (Sai, 2026-11-26) | Cloud Scheduler job that resumes expired incidents / in-process sweeper task / check on the next alert | Cloud Scheduler (survives instance restarts; Cloud Run may scale to zero, killing an in-process timer). Today the TTL is enforced only at click time via `requested_at`. Blocked on GCP being back on |
