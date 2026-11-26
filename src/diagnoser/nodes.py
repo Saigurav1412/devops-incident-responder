@@ -146,9 +146,14 @@ class DiagnoserNodes:
     async def _call_executor(
         self, state: IncidentState, request: DiagnoseRequest | RemediateRequest
     ) -> Observation:
-        """Send one request; turn a transport failure into a 'failed' Observation.
+        """Send one request; turn an ExecutorClientError into a 'failed' Observation.
 
-        WHY not let the exception propagate: an unreachable executor is something the reasoner
+        ExecutorClientError covers both "couldn't talk to the executor" (down, timeout, auth) and
+        "the executor's answer was malformed" (see diagnoser/a2a_client.py). The reason text
+        says which, e.g. "executor_error: a2a_call_failed: ..." or "executor_error:
+        malformed_task: ...".
+
+        WHY not let the exception propagate: an executor problem is something the reasoner
         should see (it may explain the incident, or argue for escalation). Crashing the graph
         would lose the incident's checkpointed progress for a transient network error.
         """
@@ -163,7 +168,7 @@ class DiagnoserNodes:
                 skill=request.skill,
                 request=request,
                 state="failed",
-                result=FailureInfo(reason=f"executor_unreachable: {exc}"),
+                result=FailureInfo(reason=f"executor_error: {exc}"),
                 observed_at=self.deps.clock(),
             )
 

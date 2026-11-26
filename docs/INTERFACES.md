@@ -199,6 +199,29 @@ refused to run this", which is what the eval counts as a blocked unsafe action.
 `stdout`/`stderr` are capped (`MAX_OUTPUT_BYTES`, default 16 KB, tail kept). The diagnoser must treat
 them as untrusted data (they are an injection surface: log lines are attacker-controlled).
 
+**Client side, implemented in `src/diagnoser/a2a_client.py` (`A2AExecutorClient`)**, how it reads your answers:
+- Fetches the Agent Card once from `EXECUTOR_URL`, then one non-streaming `SendMessage` per request
+  (timeout: `timeout_s + 10` for diagnose, 300 s for remediate). `A2A-Version: 1.0` is added by the SDK;
+  `Authorization: Bearer <token>` comes from an injected token provider, asked on every request.
+- Exactly one `Task` must come back. `COMPLETED` needs **exactly one** artifact named `command_result`
+  with **exactly one** data part that validates as `CommandResult`. `REJECTED`/`FAILED` read
+  `RejectionInfo`/`FailureInfo` from `status.message`; if that part is missing or malformed the state is
+  kept and the reason becomes `rejected_without_reason` / `failed_without_reason`.
+- Anything else raises `ExecutorClientError` (the graph records a `failed` observation with reason
+  `executor_error: …`): transport errors and JSON-RPC errors (`a2a_call_failed: <type>`), a missing,
+  duplicated or off-contract `command_result`, a bare `Message` instead of a `Task`, a non-terminal or
+  unexpected state (e.g. `WORKING`, `INPUT_REQUIRED`), or a task whose `context_id` isn't the incident_id.
+- The client also tail-caps stdout/stderr to `MAX_OUTPUT_BYTES` itself (defense in depth).
+
+**a2a-sdk 1.3.1 server behaviour seen while testing the client** (relevant to the executor server):
+- The `AgentExecutor` must enqueue a `Task` (e.g. `a2a.helpers.proto_helpers.new_task(..., SUBMITTED)`)
+  before any `TaskUpdater` status update, or the request fails with "Agent should enqueue Task before
+  TaskStatusUpdateEvent event".
+- An uncaught exception in `execute()` does **not** become a `FAILED` task for a non-streaming
+  `SendMessage` (despite the SDK docstring): the caller gets JSON-RPC `InternalError` (-32603) **with
+  the exception's message in it**. So catch exceptions in the executor and answer `FAILED` with a
+  short reason; otherwise exception text (paths, values) leaks to the caller.
+
 ### 2.4 Rules the executor enforces
 
 **Diagnostics (`diagnose`):**
