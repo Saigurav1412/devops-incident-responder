@@ -271,8 +271,18 @@ Implemented in `src/approval/` (`slack_signature.py`, `messages.py`, `handler.py
   the current proposal, and `requested_at` is within `APPROVAL_TTL_S`. Otherwise it is ignored and the
   incident stays paused. On approve, the token is minted over the action and params read from the
   checkpoint, never from the click. Check-and-resume is serialised per process.
+- HTTP: `POST /slack/interactions` (`approval/web.py`) reads the raw body (≤ 64 KB, else 413), verifies
+  the signature synchronously (401 + `{"error": reason}` if not from Slack), answers an empty 200, and
+  runs the handler in a FastAPI background task, because Slack needs the ack within 3 s. Every signed
+  request gets 200, including ignored clicks, so Slack doesn't retry; retries that do arrive are
+  ignored because the incident is no longer paused. Cloud Run needs CPU always allocated
+  (`--no-cpu-throttling`) for the background resume. `GET /healthz` for probes.
+- Posting: `approval.slack_client.request_approval_in_slack(poster, settings, pause)` sends
+  `approval_message()` to `SLACK_CHANNEL_ID` via `chat.postMessage` (`SLACK_BOT_TOKEN`); a Slack
+  `{"ok": false}` reply raises `SlackApiError(error)`. The caller that runs the graph posts it when
+  `ainvoke` returns `__interrupt__`.
 - Not built yet: escalating on expiry *without* a click (today an expired approval just stays paused),
-  posting the message, the HTTP endpoint and Slack's 3-second ack, and cross-instance locking.
+  updating the Slack message after a decision, and cross-instance locking.
 
 ### 4.3 Approval token
 Implemented in `src/contracts/approval_token.py` (`mint`, `verify`), shared by both sides so the
