@@ -7,3 +7,5 @@
   - Verified: `uv run pytest` 42 passed, `ruff check` + `ruff format --check` clean, wheel builds with all packages (checked in the session). CI result: see PR.
   - Went wrong: `ruff format` also reformatted Python code blocks inside the markdown docs; reverted and excluded `*.md` from ruff.
   - Still to do myself: read docs/walkthroughs/phase0-skeleton.md, run the tests locally, try the "break it on purpose" exercise.
+- 2026-11-26 — Sai's PR #2 review (Claude, cloud session): added `Settings.approval_key_bytes()` (hex decode, ≥32 bytes, whitespace stripped, error never echoes the value), shared `MIN_KEY_BYTES`, 10 tests, `.env.example` generation comment, INTERFACES §4.3 line.
+  - Verified: 52 tests pass with `-W error`, ruff clean; mutation check (swapping hex decode for `.encode()`) makes 6 tests fail.

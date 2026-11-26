@@ -18,6 +18,8 @@ from functools import lru_cache
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.approval_token import MIN_KEY_BYTES
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -61,6 +63,44 @@ class Settings(BaseSettings):
     # --- tracing ---
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "incident-responder"
+
+    def approval_key_bytes(self) -> bytes:
+        """The approval-token HMAC key as bytes. The ONLY way either service should get it.
+
+        WHY this exists (raised by Sai on PR #2): the env var is text, but mint()/verify() need
+        bytes. If the Slack handler did `bytes.fromhex(value)` and the executor did
+        `value.encode()`, they would hold different keys and every approval would fail
+        verification, or someone would "fix" it by weakening the check. One decoder, used by both
+        sides, makes that impossible.
+
+        Format: hex, at least 32 bytes after decoding (64 hex characters). Generate one with
+            python -c "import secrets; print(secrets.token_hex(32))"
+        Surrounding whitespace is ignored (a trailing newline from Secret Manager or a copy-paste
+        must not change the key).
+
+        Raises ValueError if the key is unset, not hex, or too short. The message never includes
+        the value itself.
+        """
+        if (
+            self.approval_signing_key is None
+            or not self.approval_signing_key.get_secret_value().strip()
+        ):
+            raise ValueError("APPROVAL_SIGNING_KEY is not set")
+        try:
+            key = bytes.fromhex(self.approval_signing_key.get_secret_value().strip())
+        except ValueError:
+            # `from None`: the original error message quotes the bad character position; drop it
+            # so nothing about the secret reaches logs.
+            raise ValueError(
+                "APPROVAL_SIGNING_KEY must be hex; generate one with "
+                '`python -c "import secrets; print(secrets.token_hex(32))"`'
+            ) from None
+        if len(key) < MIN_KEY_BYTES:
+            raise ValueError(
+                f"APPROVAL_SIGNING_KEY decodes to {len(key)} bytes; at least {MIN_KEY_BYTES} are "
+                f"required ({MIN_KEY_BYTES * 2} hex characters)"
+            )
+        return key
 
     @property
     def approver_ids(self) -> frozenset[str]:
