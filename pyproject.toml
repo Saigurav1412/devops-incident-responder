@@ -62,6 +62,9 @@ testpaths = ["tests"]
 # Make `src/` importable in tests even before the project is installed.
 pythonpath = ["src"]
 addopts = "-ra --strict-markers"
+markers = [
+    "docker: needs the target stack running; set RUN_DOCKER_TESTS=1 (see docs/walkthroughs/phase1-runner.md)",
+]
 
 [tool.ruff]
 line-length = 100

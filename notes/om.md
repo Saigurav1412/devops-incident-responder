@@ -18,3 +18,7 @@
 - 2026-11-26 — Diagnostic allowlist (Claude, cloud session, branch `feat/security-allowlist`): `src/security/allowlist.py` (default-deny argv grammar, rule ids, LLM-readable reasons, `summary()` for the prompt) + `allowlist.yaml` (containers, URL, files, limits). All AI-generated.
   - Verified: 184 tests pass with `-W error` (124 allowlist: 28 needed commands allowed, 85 attack shapes rejected with the expected rule id, fuzz 5000 random argv, compose/known-good drift checks). Mutation checks: removing the charset check, the curl URL check or the exec-flag check each makes tests fail.
   - Went wrong: one test expected the wrong rule id (`sh -c id` has no space, so it's refused as a disallowed program, not by charset); fixed the test, not the code.
+- 2026-11-26 — Diagnostic runner (Claude, cloud session, branch `feat/executor-runner`): `src/executor/runner.py` (validator → fixed PATH → no-shell exec, minimal env, cwd target/, process-group kill on timeout, tail-capped output, redaction) + `src/executor/redact.py`; 28 unit tests, 28 live-stack tests (opt-in). All AI-generated.
+  - Verified: 212 tests pass with `-W error`; mutation checks: parent-only kill, no redaction, inherited PATH, skipped validator each fail a test.
+  - Went wrong: my first timeout test had a quoting bug (the child script was a SyntaxError, so it "completed" instantly); rebuilt it with repr().
+  - NOT verified: live-stack test (needs Docker) — I run walkthrough phase1-runner.md §5.

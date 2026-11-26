@@ -177,6 +177,12 @@ them as untrusted data (they are an injection surface: log lines are attacker-co
 - `validator.summary()` renders the allowed commands as text for the diagnoser's prompt, so the
   prompt can't drift from what the executor accepts
 - the graph's `check_health` sends `curl -fsS --max-time 5 http://127.0.0.1:8088/health` (allowed)
+- run by `executor.CommandRunner.diagnose()` (`src/executor/runner.py`): binary resolved only on
+  `/usr/local/bin:/usr/bin:/bin` (never the inherited `$PATH`), stdin closed, environment reduced to
+  `PATH`, `LANG`/`LC_ALL` and the operator-set `HOME`/`DOCKER_HOST`/`DOCKER_CONFIG`, cwd = `target/`,
+  own process group killed on timeout (`FAILED`, reason `timeout after Ns`), stdout/stderr each capped
+  to the last `MAX_OUTPUT_BYTES` with the partial first line dropped, then secret-looking values
+  masked (`executor.redact`: `*PASSWORD*=`, `user:pass@` in URLs, bearer tokens, `sk-`/`xox?-`/`gh?_`/`ya29.`)
 - rule ids: `argv.*` (empty, charset, path, too_long, arg_too_long), `binary.*` (not_allowed, path),
   `docker.*` (subcommand, global_flag, flag, flag_value, flag_duplicate, follow, args, container,
   exec_flag, exec_program), `redis.*`, `pg_isready.*`, `nginx.args`, `curl.*` (flag, flag_value, url),
