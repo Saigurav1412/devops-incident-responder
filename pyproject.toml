@@ -78,4 +78,4 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests use plain `assert` (what pytest wants) and obviously fake keys/tokens as fixtures.
-"tests/**" = ["S101", "S105", "S106"]  # asserts; fake tokens/keys in fixtures
+"tests/**" = ["S101", "S105", "S106", "S108", "S311"]  # asserts; fake tokens/keys, attack paths and seeded fuzzing in fixtures

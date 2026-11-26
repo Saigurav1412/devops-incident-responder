@@ -165,9 +165,22 @@ them as untrusted data (they are an injection surface: log lines are attacker-co
 **Diagnostics (`diagnose`):**
 - argv only, executed with `subprocess.run(..., shell=False)` inside a sandbox container with the
   Docker socket proxied read-only and the target's config mounted read-only
-- binary allowlist + per-binary argument rules in `src/security/allowlist.yaml`
-  (e.g. `docker` only with `ps | logs | inspect | stats --no-stream`; `curl` only to target-stack hosts)
-- any shell metacharacter, path outside the allowed roots, or unknown flag → `rejected`
+- validated by `security.CommandValidator.check(argv)` (`src/security/allowlist.py`): default-deny
+  grammar per binary in code, allowed values (containers, URLs, files, limits) in
+  `src/security/allowlist.yaml`. A refusal returns `rule_id` + a reason written for the LLM to read
+- allowed today: `docker ps | logs | inspect | stats --no-stream`, `docker exec` of only
+  `redis-cli` (read commands) in cache, `pg_isready` in db, `nginx -t|-T` in proxy; `curl` GET of
+  exact URLs (`http://127.0.0.1:8088/health`); `cat` of the four `target/runtime/` files (cwd = `target/`);
+  `df`, `free`, `uptime`. Never: shells, docker global flags, `docker exec` flags, curl headers/output
+  files/methods, the GCE metadata server, `target/known-good/`
+- every argument: charset `[A-Za-z0-9._:/=-]` only, no `..` segment, ≤ 512 chars, ≤ 32 args
+- `validator.summary()` renders the allowed commands as text for the diagnoser's prompt, so the
+  prompt can't drift from what the executor accepts
+- the graph's `check_health` sends `curl -fsS --max-time 5 http://127.0.0.1:8088/health` (allowed)
+- rule ids: `argv.*` (empty, charset, path, too_long, arg_too_long), `binary.*` (not_allowed, path),
+  `docker.*` (subcommand, global_flag, flag, flag_value, flag_duplicate, follow, args, container,
+  exec_flag, exec_program), `redis.*`, `pg_isready.*`, `nginx.args`, `curl.*` (flag, flag_value, url),
+  `cat.*`, `df.args`, `free.args`, `uptime.args`
 
 **Remediation (`remediate`) — catalog only, never free-form:** **[proposed list]**
 

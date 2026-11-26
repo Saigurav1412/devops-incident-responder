@@ -17,12 +17,12 @@ Newest at the bottom. Move an item from **Open** to **Decided** when both agree.
 | 2026-11-22 | `AGENTS.md` is the canonical agent context; `CLAUDE.md` only imports it | One file any coding agent reads |
 | 2026-11-22 | Status tracked on the GitHub Project board, not a `STATUS.md` | A file both people edit every session causes daily merge conflicts |
 | 2026-11-22 | Handoff protocol (`docs/HANDOFF.md`, `/handoff`): durable knowledge goes into contracts/decisions/tests first; one note file per session with a required "NOT verified" section; readers verify notes against code | In A1/A2, summaries (and a memory-service bridge) silently dropped details that later caused bugs; the repo is also the only channel both teammates' agents can read |
+| 2026-11-26 | Diagnostics: free-form argv, validated by a default-deny grammar (`src/security/allowlist.py`); remediation: typed catalog only (§2.4) | Diagnosis needs flexible read-only commands (the "terminal control" feature); changes need a fixed, approvable shape. Proposed by Om in PR (security-allowlist); Sai reviews |
 
 ## Open (resolve in Phase 0)
 
 | Question | Options | Leaning |
 |---|---|---|
-| Remediation: typed action catalog vs. free-form commands behind an allowlist | catalog (safer, easier to verify) / free-form (stronger "terminal control" story) | catalog for remediation, free-form-but-validated argv for diagnostics |
 | Firestore checkpointer | custom `BaseCheckpointSaver` / community package | try community package, fall back to custom |
 | LLM | own OpenAI key / ChatGPT Edu OAuth (no API key) / Gemini free tier | confirm on Piazza whether A3's "no NIM" guidance still applies |
 | Target stack contents | app + Postgres + Redis + nginx / something smaller | smallest stack that supports 20 distinct faults |
