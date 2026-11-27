@@ -61,8 +61,8 @@ Thanksgiving is Thu Nov 26. Plan for 2.5 working days, not 4.
 **Om**
 - [ ] Fault catalog to 20 (spread across categories in INTERFACES §5)
 - [x] `evals/harness.py`: reset → inject (self-confirmed) → run → oracle → record JSONL; scripted approver; noop + scripted baselines (live 2026-11-26, WSL2: noop 0/5, scripted 15/15, 0 invalid, TTR p50 4.2 s / p95 5.94 s)
-- [ ] `--agent diagnoser-scripted`: harness drives Sai's real service + graph + signed Slack click + A2A → executor (`evals/diagnoser_agent.py`); 17 in-process tests (live run pending Om's WSL run)
-- [x] Ablation switches wired for the diagnoser agent: `--config memory=false`, `--config max_hypotheses=N` (tested in-process; live run pending)
+- [x] `--agent diagnoser-scripted`: harness drives Sai's real service + graph + signed Slack click + A2A → executor (`evals/diagnoser_agent.py`); live 2026-11-26 WSL2: 5/5, 15/15, memory=false 5/5 resolved by the oracle, BUT the agent itself escalated 10/25 (api-bad-db-url, db-stopped) and replanned needlessly on 2 more faults: `check_health` curls once, ~20 ms after the fix. Fix pending (health-check grace period)
+- [x] Ablation switches wired for the diagnoser agent: `--config memory=false`, `--config max_hypotheses=N` (live: memory=false run 5/5)
 - [ ] First full 20 × 1 run; triage failures with Sai
 
 **Sai**

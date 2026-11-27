@@ -69,6 +69,23 @@ If it happens, the fix belongs in the executor (yours): a final "wait until the 
 healthcheck says healthy" step, so `COMPLETED, exit 0` really means "applied and up". Don't change it
 until the run shows it's needed.
 
+### Result of the first live run (2026-11-26, Om, WSL2): it happens, every time
+
+Reconstructed per episode from the executor log (25 episodes: 5 + 15 + 5 with `memory=false`), identical every time:
+
+| Fault | Fixes applied | Health curls (exit) | Agent's own outcome |
+|---|---|---|---|
+| cache-maxmemory-01 | 1 | 0 | resolved |
+| proxy-bad-upstream-01 | 2 | 22, 0 | resolved after 1 replan |
+| api-bad-image-01 | 3 | 22, 22, 0 | resolved after 2 replans |
+| api-bad-db-url-01 | 4 | 22, 22, 22, 22 | **escalated** (replans exhausted) |
+| db-stopped-01 | 4 | 22, 22, 22, 22 | **escalated** (replans exhausted) |
+
+The first fix was right every time; the curl just ran ~20 ms after `docker compose` returned, before the
+API was answering. The oracle (which polls) saw every stack recover, so the headline said 25/25. That's
+why `evals/metrics.py` now also reports **gave up but healed** (10/25 here). Each needless replan also
+cost a new approval and a repeat restart: four Slack approvals and four Postgres restarts for one incident.
+
 ## 5. Run it (yours, ~10 minutes)
 
 ```bash
