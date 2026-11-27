@@ -17,7 +17,8 @@ src/memory/store.py because the memory slice owns it (INTERFACES §3).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
@@ -158,3 +159,5 @@ class DiagnoserDeps:
     settings: Settings
     # Injectable clock: tests move time forward to trigger the wall-clock cap deterministically.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    # Injectable sleep: check_health waits between retries; tests pass a no-op so they don't.
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
