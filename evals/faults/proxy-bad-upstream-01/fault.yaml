@@ -1,0 +1,8 @@
+id: proxy-bad-upstream-01
+category: config
+description: >
+  nginx's upstream points at api:8001 instead of api:8000 (a bad config push), then nginx is
+  reloaded. Every request through the proxy returns 502; the api itself is healthy, which makes
+  this a good test of whether the agent checks each hop instead of blaming the api.
+expected_fix: restore_config   # params: service=proxy, file=nginx.conf
+timeout_s: 300

@@ -43,5 +43,16 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      - name: Shell scripts
+        # shellcheck is preinstalled on GitHub's ubuntu runners. The target stack and fault scripts
+        # run against real containers in the eval, so a quoting bug here would corrupt results.
+        run: shellcheck -x -S warning target/*.sh evals/faults/*/*.sh
+
+      - name: Compose file
+        # Validates target/docker-compose.yml without pulling images or starting anything.
+        run: |
+          mkdir -p target/runtime && cp target/known-good/* target/runtime/
+          docker compose -p ir-target -f target/docker-compose.yml --env-file target/runtime/stack.env config --quiet
+
       - name: Tests
         run: uv run pytest

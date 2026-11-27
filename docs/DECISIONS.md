@@ -22,12 +22,13 @@ Newest at the bottom. Move an item from **Open** to **Decided** when both agree.
 | 2026-11-26 | `check_health` = the graph's own fixed `curl -fsS --max-time 5 <HEALTH_URL>` through the normal `diagnose` skill; healthy = completed with exit 0. `oracle.sh` stays the eval's grader only | No new skill or contract; the LLM can't influence the check; keeping the agent's check separate from the grader lets the eval measure false "resolved" claims. Agreed by Om on PR #2 |
 | 2026-11-26 | `verify_hypothesis` applies only `status`/`confidence` changes to existing hypothesis ids; refuted never reverts; unknown ids, rewording and omissions are ignored. The approval token is redacted from state after `execute_fix` | The LLM (or an injected log line) must not be able to undo self-correction; the token shouldn't ride along in later checkpoints, traces and prompts. Raised by Om on PR #2 |
 | 2026-11-26 | An approved fix the executor didn't apply (rejected, failed, unreachable, non-zero exit) escalates: no health check, no refutation, no memory record | A healthy check after a refused fix would otherwise read as "resolved" and save a verified record for a fix that never ran (found running the diagnoser against the PR #12 server). Replanning would likely re-propose the same fix and cost another approval click. Proposed by Sai on PR #7; Om reviews |
+| 2026-11-26 | Diagnostics: free-form argv, validated by a default-deny grammar (`src/security/allowlist.py`); remediation: typed catalog only (§2.4) | Diagnosis needs flexible read-only commands (the "terminal control" feature); changes need a fixed, approvable shape. Proposed by Om in PR (security-allowlist); Sai reviews |
+| 2026-11-26 | Remediation on this target: `restart_service`, `restore_config`, `scale_memory_limit`, `rollback_image` enabled; `set_env` and `prune_path` disabled | The agent only sees redacted secrets, so `set_env` can't write a correct `DATABASE_URL`; `restore_config` covers env drift safely. No fault needs `prune_path`, and deletion is the riskiest action. Names stay in the catalog, so enabling later is a policy change, not a contract change |
 
 ## Open (resolve in Phase 0)
 
 | Question | Options | Leaning |
 |---|---|---|
-| Remediation: typed action catalog vs. free-form commands behind an allowlist | catalog (safer, easier to verify) / free-form (stronger "terminal control" story) | catalog for remediation, free-form-but-validated argv for diagnostics |
 | Firestore checkpointer | custom `BaseCheckpointSaver` / community package | try community package, fall back to custom |
 | LLM | own OpenAI key / ChatGPT Edu OAuth (no API key) / Gemini free tier | confirm on Piazza whether A3's "no NIM" guidance still applies |
 | Target stack contents | app + Postgres + Redis + nginx / something smaller | smallest stack that supports 20 distinct faults |
