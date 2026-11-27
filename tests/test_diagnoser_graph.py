@@ -18,14 +18,25 @@ from contracts import (
     Alert,
     ApprovalDecision,
     CommandResult,
+    FailureInfo,
     Hypothesis,
     IncidentRecord,
+    Observation,
     ProposedAction,
+    RejectionInfo,
+    RemediateRequest,
 )
 from diagnoser.fakes import FakeExecutorClient, ScriptedReasoner
 from diagnoser.graph import build_graph, new_incident_state, resume_with, thread_config
-from diagnoser.nodes import APPROVAL_INTERRUPT_KIND, REDACTED, apply_assessment
-from diagnoser.ports import DiagnoserDeps, FixProposal, Reasoned
+from diagnoser.nodes import (
+    APPROVAL_INTERRUPT_KIND,
+    REDACTED,
+    DiagnoserNodes,
+    apply_assessment,
+    fix_applied,
+    last_remediation,
+)
+from diagnoser.ports import DiagnoserDeps, ExecutorClientError, FixProposal, Reasoned
 from memory.store import InMemoryIncidentMemory
 
 APPROVER = "U_SAI"
@@ -547,19 +558,36 @@ def test_health_check_uses_health_url_from_config():
     assert executor.health_checks == 1
 
 
+class HealthUnreachable(FakeExecutorClient):
+    """The fix goes through, then the executor drops off before the health check.
+
+    (Making the whole fake unreachable would stop at the fix: an unapplied fix escalates before
+    any health check, see route_after_execute.)
+    """
+
+    async def diagnose(self, request):
+        if tuple(request.command) == self.health_argv:
+            self.calls.append(request)
+            raise ExecutorClientError("connection refused (fake)")
+        return await super().diagnose(request)
+
+
 @pytest.mark.parametrize(
     ("executor_kwargs", "why"),
     [
         ({"health": [False]}, "curl -f exits 22 on a 503"),
         ({"health_url": "http://not-the-configured-url/health"}, "REJECTED by the executor"),
-        ({"unreachable": True}, "executor unreachable: a failed check is not a pass"),
+        ({"health_unreachable": True}, "executor unreachable: a failed check is not a pass"),
     ],
 )
 def test_anything_but_exit_0_counts_as_unhealthy(executor_kwargs, why):
     result = CommandResult(exit_code=0, stdout="x", stderr="", truncated=False, duration_ms=1)
-    executor = FakeExecutorClient(
-        diagnose_results={tuple(LOGS_CMD): result}, clock=FakeClock(), **executor_kwargs
+    cls = (
+        HealthUnreachable
+        if executor_kwargs.pop("health_unreachable", False)
+        else FakeExecutorClient
     )
+    executor = cls(diagnose_results={tuple(LOGS_CMD): result}, clock=FakeClock(), **executor_kwargs)
     graph, paused = start(make_deps(happy_reasoner(), executor=executor, max_replans=0))
     action_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
 
@@ -567,3 +595,125 @@ def test_anything_but_exit_0_counts_as_unhealthy(executor_kwargs, why):
 
     assert done["outcome"] == "escalated", why
     assert done["hypotheses"][0].status == "refuted", why
+
+
+# ---------------------------------------------------------------------------------------------
+# A fix the executor didn't apply is never "resolved"
+# ---------------------------------------------------------------------------------------------
+# Found by running the graph against Om's real executor server (PR #12) with a token minted over
+# the wrong params: the executor correctly refused the fix, but the graph still ran check_health,
+# the service answered, and the incident ended "resolved" with a verified memory record for a fix
+# that never ran. A service that recovers by itself would do exactly that in production.
+
+
+@pytest.mark.parametrize(
+    ("result", "why"),
+    [
+        (RejectionInfo(reason="approval_invalid", rule_id="approval"), "refused by policy"),
+        (FailureInfo(reason="timeout after 120s"), "failed half-way"),
+        (
+            CommandResult(
+                exit_code=1, stdout="", stderr="no such service", truncated=False, duration_ms=4
+            ),
+            "completed, but the step exited non-zero",
+        ),
+    ],
+)
+def test_fix_not_applied_escalates_even_if_the_service_looks_healthy(result, why):
+    memory = InMemoryIncidentMemory()
+    executor = logs_executor(health=(True,))  # the service answers: the trap
+    executor.remediate_results = {"restart_service": result}
+    graph, paused = start(make_deps(happy_reasoner(), executor=executor, memory=memory))
+    action_id = paused["__interrupt__"][0].value["proposed"]["action_id"]
+
+    done = decide(graph, action_id)
+
+    assert done["outcome"] == "escalated", why
+    assert executor.health_checks == 0, why  # no health check: nothing was applied to check
+    assert len(memory) == 0, why  # no "verified" record
+    # The hypothesis isn't refuted: the fix never ran, so this says nothing about the diagnosis.
+    assert done["hypotheses"][0].status == "confirmed", why
+
+
+def test_unreachable_executor_during_the_fix_escalates():
+    # Same rule via _call_executor: a transport failure becomes a "failed" observation.
+    obs = Observation(
+        task_id="",
+        skill="remediate",
+        request=RemediateRequest(
+            incident_id="inc-1",
+            action_id="act-1",
+            action="restart_service",
+            params={"service": "db"},
+            approval_token=FAKE_TOKEN,
+            idempotency_key="act-1",
+        ),
+        state="failed",
+        result=FailureInfo(reason="executor_error: connection refused"),
+        observed_at=T0,
+    )
+    assert not fix_applied(obs)
+
+
+def _remediation(action_id: str, result) -> Observation:
+    return Observation(
+        task_id=f"t-{action_id}",
+        skill="remediate",
+        request=RemediateRequest(
+            incident_id="inc-1",
+            action_id=action_id,
+            action="restart_service",
+            params={"service": "db"},
+            approval_token=REDACTED,
+            idempotency_key=action_id,
+        ),
+        state="completed" if isinstance(result, CommandResult) else "rejected",
+        result=result,
+        observed_at=T0,
+    )
+
+
+OK = CommandResult(exit_code=0, stdout="ok", stderr="", truncated=False, duration_ms=1)
+
+
+def test_an_earlier_fix_does_not_count_for_the_current_proposal():
+    state = new_incident_state(alert(), now=T0, incident_id="inc-1")
+    state["proposed"] = ProposedAction(
+        action_id="act-2",
+        action="restart_service",
+        params={"service": "db"},
+        rationale="r",
+    )
+    state["observations"] = [_remediation("act-1", OK)]  # applied, but for an older proposal
+    assert last_remediation(state) is None
+
+    state["observations"].append(_remediation("act-2", RejectionInfo(reason="x", rule_id="y")))
+    assert last_remediation(state).request.action_id == "act-2"
+    assert not fix_applied(last_remediation(state))
+
+
+def test_save_memory_refuses_a_fix_that_was_not_applied():
+    # Defence in depth behind route_after_execute: even if routing were wrong, memory stays clean.
+    memory = InMemoryIncidentMemory()
+    nodes = DiagnoserNodes(make_deps(happy_reasoner(), memory=memory))
+    state = new_incident_state(alert(), now=T0, incident_id="inc-1")
+    state["hypotheses"] = [hyp("postgres is down", "confirmed")]
+    state["proposed"] = ProposedAction(
+        action_id="act-1",
+        action="restart_service",
+        params={"service": "db"},
+        rationale="r",
+    )
+    state["observations"] = [_remediation("act-1", RejectionInfo(reason="x", rule_id="y"))]
+
+    with pytest.raises(RuntimeError, match="didn't apply"):
+        asyncio.run(nodes.save_memory(state))
+    assert len(memory) == 0
+
+
+def test_fix_applied_needs_completed_state_and_remediate_skill():
+    # The Observation contract doesn't tie `state` to the result type, so check both.
+    applied = _remediation("act-1", OK)
+    assert fix_applied(applied)
+    assert not fix_applied(applied.model_copy(update={"state": "failed"}))
+    assert not fix_applied(applied.model_copy(update={"skill": "diagnose"}))
