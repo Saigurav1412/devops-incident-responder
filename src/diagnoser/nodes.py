@@ -411,24 +411,56 @@ class DiagnoserNodes:
         WHY not oracle.sh: that is the eval's grader (it also writes to the stack). Keeping the
         agent's check separate lets the eval measure "agent said resolved, grader disagrees".
 
-        If unhealthy, the hypothesis we acted on was wrong (or incomplete), so it is marked
+        GRACE PERIOD: a fixed service needs a few seconds to answer (`docker compose restart`
+        and `up -d` return when the container has started, not when it serves). So an unhealthy
+        answer is retried every HEALTH_RETRY_INTERVAL_S until the curl passes or
+        HEALTH_SETTLE_S has been spent waiting. Found in the first live eval run: one curl
+        ~20 ms after the fix refuted correct fixes and escalated 10 of 25 episodes, after four
+        approvals and four restarts each. Bounded three ways (AGENTS.md rule 5): the settle
+        window, the attempt count derived from it, and MAX_TOOL_CALLS (every curl counts).
+        Not retried: REJECTED (policy refused the health URL; asking again won't change it).
+
+        If still unhealthy, the hypothesis we acted on was wrong (or incomplete), so it is marked
         refuted here; the replan that follows sees it as ruled out and won't propose the same fix.
         """
+        settings = self.deps.settings
         request = DiagnoseRequest(
             incident_id=state["incident_id"],
-            command=health_check_argv(self.deps.settings.health_url),
+            command=health_check_argv(settings.health_url),
         )
-        observation = await self._call_executor(state, request)
-        healthy = (
-            observation.state == "completed"
-            and isinstance(observation.result, CommandResult)
-            and observation.result.exit_code == 0
+        # 0 s settle = exactly one curl. Otherwise one now plus one per interval in the window.
+        max_attempts = 1 + int(settings.health_settle_s // settings.health_retry_interval_s)
+        calls_left = settings.max_tool_calls - state["budget"].tool_calls
+        observations = list(state["observations"])
+        attempts, healthy = 0, False
+        while True:
+            observation = await self._call_executor(state, request)
+            observations.append(observation)
+            attempts += 1
+            healthy = (
+                observation.state == "completed"
+                and isinstance(observation.result, CommandResult)
+                and observation.result.exit_code == 0
+            )
+            if (
+                healthy
+                or observation.state == "rejected"
+                or attempts >= max_attempts
+                or attempts >= calls_left
+            ):
+                break
+            await self.deps.sleep(settings.health_retry_interval_s)
+        self._log(
+            state,
+            "health checked",
+            healthy=healthy,
+            task_state=observation.state,
+            attempts=attempts,
         )
-        self._log(state, "health checked", healthy=healthy, task_state=observation.state)
 
         update: dict[str, Any] = {
-            "observations": [*state["observations"], observation],
-            "budget": self._add_budget(state, tool_calls=1),
+            "observations": observations,
+            "budget": self._add_budget(state, tool_calls=attempts),
         }
         if not healthy:
             update["hypotheses"] = [
