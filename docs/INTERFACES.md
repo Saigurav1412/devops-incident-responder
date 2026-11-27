@@ -111,6 +111,9 @@ rather than store a `verified` record for a fix that didn't run.
   raises `ReasonerError` (→ escalate). Provider errors are not retried by the reasoner. Tokens of every
   attempt, failed ones included, go to the budget.
 - If the executor's card can't be fetched, no LLM call is made and the same defaults apply.
+- The policy summaries are cached for the diagnoser's process lifetime. **Deploy note:** after an
+  executor redeploy that changes `allowlist.yaml` / `remediation.yaml`, restart the diagnoser too
+  (until then the prompt shows the old policy; the executor still enforces the new one).
 
 **Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`

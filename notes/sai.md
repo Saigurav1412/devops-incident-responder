@@ -47,3 +47,8 @@
 - Verified by: 228 tests (`-W error`), an injection test with a forged closing marker, 18 mutation checks (all killed), the wheel built and listed to confirm the prompt files ship.
 - Went wrong: (1) fetching the Agent Card myself silently dropped the `A2A-Version` header, because the SDK adds it in the ClientFactory constructor; an old header test caught it. (2) A same-size mutation restored within the same second left a stale `.pyc`, so 2 tests failed on correct code; fixed the mutation script to clear `__pycache__`.
 - Not verified: anything about prompt quality; there is no real model behind it yet.
+
+## 2026-11-27 — #14 review fixes, merging both stacks
+- Merged Om's #4–#6, #12 and my #7–#11 into main in order (Claude Code ran a local dry run first to pick the order with the fewest conflict points: 2; conflicts only in DECISIONS/pyproject/uv.lock). Final main: 408 passed, CI green.
+- Om's #14 review found two real gaps in my AI-generated reasoner: `truncated` ignored stderr, and `ensure_ascii=False` let Unicode line separators through the fence. Fixed with tests written first (they failed, then passed).
+- Lesson: my own injection test only used `\n`; a reviewer probing other "newline" characters found what my test didn't.

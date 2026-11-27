@@ -175,6 +175,10 @@ def _clip(text: str, limit: int = TEXT_CHARS) -> str:
     return text if len(text) <= limit else text[:limit] + "[...cut...]"
 
 
+# U+0085 NEXT LINE, U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR -> JSON \u escapes.
+_LINE_SEPARATOR_ESCAPES = {0x85: "\\u0085", 0x2028: "\\u2028", 0x2029: "\\u2029"}
+
+
 class _Fence:
     """Wraps untrusted payloads in nonce-marked blocks.
 
@@ -188,6 +192,10 @@ class _Fence:
 
     def wrap(self, payload: Any) -> str:
         body = json.dumps(payload, ensure_ascii=False).replace(self.nonce, "")
+        # JSON escapes \n and \r, but with ensure_ascii=False it leaves the Unicode line
+        # separators raw, and some tokenizers treat them as line breaks. Escape them so "a fake
+        # marker can't start a line" holds (Om's review on #14). Same JSON meaning, still parses.
+        body = body.translate(_LINE_SEPARATOR_ESCAPES)
         return (
             f"===BEGIN UNTRUSTED DATA {self.nonce}===\n{body}\n"
             f"===END UNTRUSTED DATA {self.nonce}==="
@@ -209,7 +217,11 @@ def _observation_payload(n: int, obs: Observation, *, with_output: bool) -> dict
         if with_output:
             item["stdout_tail"] = _tail(result.stdout)
             item["stderr_tail"] = _tail(result.stderr)
-            item["truncated"] = result.truncated or len(result.stdout) > OUTPUT_TAIL_CHARS
+            item["truncated"] = (
+                result.truncated
+                or len(result.stdout) > OUTPUT_TAIL_CHARS
+                or len(result.stderr) > OUTPUT_TAIL_CHARS
+            )
     elif isinstance(result, RejectionInfo):
         item["rejected_reason"] = _clip(result.reason)
         item["rule_id"] = result.rule_id
@@ -341,6 +353,9 @@ class LLMReasoner:
 
     async def _policy_text(self) -> PolicySummaries:
         # Cached only on success, so a transient card failure is retried on the next call.
+        # Cached for the process lifetime: after an executor redeploy with a changed policy,
+        # restart the diagnoser too (the executor still enforces the real policy meanwhile, so
+        # the worst case is extra rejections, not a bypass). Noted in INTERFACES §1.
         if self._policy is None:
             self._policy = await self._policy_source.policy_summaries()
         return self._policy
