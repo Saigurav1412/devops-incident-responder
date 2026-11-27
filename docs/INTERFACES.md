@@ -66,6 +66,7 @@ class IncidentState(TypedDict):
 `verify_hypothesis --refuted--> plan_hypotheses` (replan, bounded by `MAX_REPLANS`)
 `verify_hypothesis --confirmed--> propose_fix → request_approval (interrupt) → execute_fix → check_health`
 `check_health --fail--> plan_hypotheses` · `check_health --pass--> save_memory → END`
+`execute_fix --fix not applied--> escalate` (remediate task not `completed` with `exit_code == 0`)
 `verify_hypothesis --still open--> diagnose` (gather more evidence; bounded by the caps below)
 `request_approval --reject--> END` (`outcome="rejected"`)
 Out of replans → `escalate → END` (`outcome="escalated"`). Any cap hit → `budget_exceeded → END`.
@@ -88,6 +89,12 @@ HEALTH_URL]`, through the normal `diagnose` skill and records it as an observati
 call). Healthy = `completed` with `exit_code == 0`; anything else (non-zero exit, rejected, failed,
 executor unreachable) is unhealthy and refutes the confirmed hypothesis. `HEALTH_URL` must be one of
 the executor allowlist's exact curl URLs.
+
+`check_health` only runs if the executor applied the fix: the remediate observation for the current
+`action_id` is `completed` with `exit_code == 0`. Otherwise (rejected, failed, unreachable, non-zero
+exit) the graph escalates without a health check and without refuting the hypothesis, because an
+unapplied fix says nothing about the diagnosis. `save_memory` checks the same thing again and raises
+rather than store a `verified` record for a fix that didn't run.
 
 **Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
