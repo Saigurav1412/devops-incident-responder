@@ -66,6 +66,17 @@ REDACTED = "redacted"
 HEALTH_MAX_TIME_S = 5
 
 
+def health_check_waits(settle_s: float, initial_s: float) -> list[float]:
+    """The waits between health curls: initial_s, then doubling, while the total stays within
+    settle_s. Defaults (20, 1) give [1, 2, 4, 8]: curls at 0, 1, 3, 7 and 15 s. 0 settle = []."""
+    waits: list[float] = []
+    wait = initial_s
+    while sum(waits) + wait <= settle_s:
+        waits.append(wait)
+        wait *= 2
+    return waits
+
+
 def health_check_argv(health_url: str) -> list[str]:
     """The ONE command check_health runs. Built by code from config, never by the LLM.
 
@@ -413,11 +424,13 @@ class DiagnoserNodes:
 
         GRACE PERIOD: a fixed service needs a few seconds to answer (`docker compose restart`
         and `up -d` return when the container has started, not when it serves). So an unhealthy
-        answer is retried every HEALTH_RETRY_INTERVAL_S until the curl passes or
-        HEALTH_SETTLE_S has been spent waiting. Found in the first live eval run: one curl
+        answer is retried with exponential backoff (`health_check_waits`): first wait
+        HEALTH_RETRY_INITIAL_S, doubling, never past HEALTH_SETTLE_S in total. Found in the first live eval run: one curl
         ~20 ms after the fix refuted correct fixes and escalated 10 of 25 episodes, after four
-        approvals and four restarts each. Bounded three ways (AGENTS.md rule 5): the settle
-        window, the attempt count derived from it, and MAX_TOOL_CALLS (every curl counts).
+        approvals and four restarts each. Backoff, not a fixed interval, because a WRONG fix
+        would otherwise spend up to 11 tool calls per check (Sai's probe on #16). Bounded three
+        ways (AGENTS.md rule 5): the settle window, the wait list derived from it, and
+        MAX_TOOL_CALLS (every curl counts).
         Not retried: REJECTED (policy refused the health URL; asking again won't change it).
 
         If still unhealthy, the hypothesis we acted on was wrong (or incomplete), so it is marked
@@ -428,8 +441,9 @@ class DiagnoserNodes:
             incident_id=state["incident_id"],
             command=health_check_argv(settings.health_url),
         )
-        # 0 s settle = exactly one curl. Otherwise one now plus one per interval in the window.
-        max_attempts = 1 + int(settings.health_settle_s // settings.health_retry_interval_s)
+        # 0 s settle = exactly one curl; otherwise one now plus one after each wait.
+        waits = health_check_waits(settings.health_settle_s, settings.health_retry_initial_s)
+        max_attempts = 1 + len(waits)
         calls_left = settings.max_tool_calls - state["budget"].tool_calls
         observations = list(state["observations"])
         attempts, healthy = 0, False
@@ -449,7 +463,7 @@ class DiagnoserNodes:
                 or attempts >= calls_left
             ):
                 break
-            await self.deps.sleep(settings.health_retry_interval_s)
+            await self.deps.sleep(waits[attempts - 1])
         self._log(
             state,
             "health checked",

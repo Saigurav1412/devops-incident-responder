@@ -87,9 +87,10 @@ hypotheses are ignored (omitted = unchanged).
 `check_health` sends one fixed `DiagnoseRequest` built by code, `["curl", "-fsS", "--max-time", "5",
 HEALTH_URL]`, through the normal `diagnose` skill and records it as an observation (counts as a tool
 call). Healthy = `completed` with `exit_code == 0`. **Grace period:** an unhealthy answer is retried
-every `HEALTH_RETRY_INTERVAL_S` (default 2) until it passes or `HEALTH_SETTLE_S` (default 20) has been
-spent waiting, i.e. at most `1 + HEALTH_SETTLE_S // HEALTH_RETRY_INTERVAL_S` curls, each an observation
-and a tool call, and never past `MAX_TOOL_CALLS`. `REJECTED` is not retried. Still unhealthy after that
+with exponential backoff: the first wait is `HEALTH_RETRY_INITIAL_S` (default 1), each next wait doubles,
+and no wait starts that would take the total past `HEALTH_SETTLE_S` (default 20). With the defaults
+that is curls at 0, 1, 3, 7 and 15 s (at most 5), each an observation and a tool call, and never past
+`MAX_TOOL_CALLS`. `REJECTED` is not retried. Still unhealthy after that
 (non-zero exit, rejected, failed, executor unreachable) refutes the confirmed hypothesis. `HEALTH_SETTLE_S=0`
 = one curl. WHY: a restarted service needs seconds to answer; one curl ~20 ms after the fix refuted
 correct fixes in 10 of 25 live eval episodes (2026-11-26). `HEALTH_URL` must be one of the executor
@@ -459,7 +460,7 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 | `EMBEDDING_MODEL` | diagnoser | |
 | `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
 | `HEALTH_URL` | diagnoser | what `check_health` curls, as seen from the VM; default `http://127.0.0.1:8088/health`; must match the executor's curl allowlist |
-| `HEALTH_SETTLE_S`, `HEALTH_RETRY_INTERVAL_S` | diagnoser | `check_health` grace period (§1); defaults 20 and 2; 0 settle = one curl |
+| `HEALTH_SETTLE_S`, `HEALTH_RETRY_INITIAL_S` | diagnoser | `check_health` grace period (§1): total wait budget and first backoff wait (doubles); defaults 20 and 1; 0 settle = one curl |
 | `INCIDENT_API_TOKEN` | diagnoser; monitor + eval harness send it | bearer token for `/incidents` (§1.1); Secret Manager in cloud; unset = intake refuses all |
 | `GCP_PROJECT`, `FIRESTORE_DATABASE` | diagnoser | |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_CHANNEL_ID` | diagnoser | |

@@ -37,13 +37,16 @@ class Settings(BaseSettings):
     # so this is the proxy as seen from there. Must be one of the executor allowlist's exact
     # curl URLs (src/security/allowlist.yaml), or every health check comes back REJECTED.
     health_url: str = "http://127.0.0.1:8088/health"
-    # Grace period for check_health after a fix (INTERFACES §1). The fixed curl is retried every
-    # HEALTH_RETRY_INTERVAL_S until it passes or HEALTH_SETTLE_S has been spent waiting.
+    # Grace period for check_health after a fix (INTERFACES §1). The fixed curl is retried with
+    # exponential backoff: the first wait is HEALTH_RETRY_INITIAL_S, each next one doubles, and
+    # no wait starts that would take the total past HEALTH_SETTLE_S (defaults: curls at 0, 1, 3,
+    # 7, 15 s). Backoff instead of a fixed interval: a WRONG fix otherwise spends up to 11 tool
+    # calls per check (Sai's probe on #16: budget_exceeded instead of escalated).
     # WHY: `docker compose restart` / `up -d` return when the container has STARTED, not when
     # it answers. With a single curl ~20 ms after the fix, the first live run refuted correct
     # fixes and escalated 10 of 25 episodes (evals, 2026-11-26). 0 = one curl, no retry.
     health_settle_s: float = Field(default=20.0, ge=0.0, le=120.0)
-    health_retry_interval_s: float = Field(default=2.0, gt=0.0, le=30.0)
+    health_retry_initial_s: float = Field(default=1.0, gt=0.0, le=30.0)
     # Bearer token callers of POST /incidents must send (the monitor, the eval harness).
     # The diagnoser service has to be publicly reachable for Slack's webhook, so incident intake
     # needs its own check. Unset = intake refuses everything (fails closed).
