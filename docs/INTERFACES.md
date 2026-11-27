@@ -188,23 +188,40 @@ them as untrusted data (they are an injection surface: log lines are attacker-co
   exec_flag, exec_program), `redis.*`, `pg_isready.*`, `nginx.args`, `curl.*` (flag, flag_value, url),
   `cat.*`, `df.args`, `free.args`, `uptime.args`
 
-**Remediation (`remediate`) — catalog only, never free-form:** **[proposed list]**
+**Remediation (`remediate`) — catalog only, never free-form:**
 
 The action **names** are code in `src/contracts/catalog.py` (`REMEDIATION_ACTIONS`); the fault
 catalog and the approval token both refer to them. Each action's params and behaviour belong to the
 executor. `restore_config` copies a file from `target/known-good/` into `target/runtime/` with `cp`
 (same inode, so a bind-mounted file updates inside the container), then restarts or reloads the service.
 
-| Action | Params | Rollback |
-|---|---|---|
-| `restart_service` | `service` | — |
-| `restore_config` | `service`, `file` (from known-good snapshot) | `restore_config` to previous |
-| `set_env` | `service`, `key`, `value` (key allowlist) | `set_env` previous value |
-| `scale_memory_limit` | `service`, `mb` (bounded range) | previous limit |
-| `rollback_image` | `service`, `tag` (from a pinned list) | previous tag |
-| `prune_path` | `path` (under an allowlisted dir) | — |
+Implemented in `src/executor/remediation.py` (`Remediator.remediate`); what is enabled and what each
+action may touch is in `src/executor/remediation.yaml`. All params are strings.
 
-Each action validates its own params with a Pydantic model; anything else → `rejected`.
+| Action | Params (this target) | What the executor does | Enabled |
+|---|---|---|---|
+| `restart_service` | `service` ∈ proxy, api, db, cache | `docker compose restart <service>` | yes |
+| `restore_config` | `service` + its `file`: proxy `nginx.conf`, api `api.env`, cache `redis.conf` | copy known-good → runtime (same inode), then proxy: `nginx -s reload`; api: recreate; cache: restart | yes |
+| `scale_memory_limit` | `service`, `mb` (proxy 32–256, api/db 128–1024, cache 64–512) | set `<SVC>_MEM_LIMIT=<mb>m` in runtime/stack.env, `up -d --no-deps` | yes |
+| `rollback_image` | `service` = api, `tag` = good | set `API_IMAGE_TAG`, `up -d --no-deps api` | yes |
+| `set_env` | — | refused (`remediate.action_disabled`): the agent only sees redacted values, so it can't write a correct secret-bearing value; `restore_config` undoes env drift | no |
+| `prune_path` | — | refused (`remediate.action_disabled`): no fault needs it; deleting is the riskiest action | no |
+
+Gates, in order (each refusal changes nothing): `idempotency_key == action_id`
+(`remediate.idempotency_key`) → action known (`remediate.unknown_action`) and enabled
+(`remediate.action_disabled`) → approval token verified with `Settings.approval_key_bytes()`
+(`rule_id: null`, reason `approval_invalid|approval_expired|approval_malformed`) → params valid
+(`remediate.params`; **a valid approval does not bypass policy**) → not already run.
+
+Idempotency: a sqlite store keyed by `idempotency_key`. A retry of a finished request returns the
+stored outcome without running again; a key reused for a different request is refused
+(`remediate.idempotency_conflict`); an attempt interrupted mid-way is **not** re-run (`FAILED`,
+`remediate.interrupted`) and needs a new proposal. One remediation runs at a time.
+
+Steps are built by the executor's code from validated params, never supplied by the LLM, and run
+through the same `CommandRunner` path as diagnostics (fixed PATH, no shell, timeout, output cap,
+redaction). Result: `COMPLETED` with every step listed in `stdout` and the last step's exit code;
+`FAILED` (`remediate.step`) if a step couldn't run.
 
 ---
 

@@ -131,13 +131,28 @@ class CommandRunner:
                 decision.rule_id,
             )
 
+        return await self.run_argv(argv, request.timeout_s, ctx=ctx, rule_id=decision.rule_id)
+
+    async def run_argv(
+        self,
+        argv: list[str],
+        timeout_s: int,
+        *,
+        ctx: dict[str, object] | None = None,
+        rule_id: str | None = None,
+    ) -> RunOutcome:
+        """Steps 2–6 of the docstring: run an argv that has ALREADY been authorised.
+
+        Callers: `diagnose()` after the validator allowed the argv, and the remediation actions,
+        whose argv is built by our own code (never by the LLM) after the approval token checked
+        out. Nothing else should call this: it does not validate `argv` itself.
+        """
+        ctx = ctx if ctx is not None else {"argv": argv}
         # 2. Binary from the fixed path only.
         binary = shutil.which(argv[0], path=self.search_path)
         if binary is None:
             log.error("binary not found", extra=ctx)
-            return RunOutcome(
-                "failed", FailureInfo(reason=f"binary_not_found: {argv[0]}"), decision.rule_id
-            )
+            return RunOutcome("failed", FailureInfo(reason=f"binary_not_found: {argv[0]}"), rule_id)
 
         # 3–5. Run.
         started = self.clock()
@@ -157,7 +172,7 @@ class CommandRunner:
             return RunOutcome(
                 "failed",
                 FailureInfo(reason=f"start_failed: {type(exc).__name__}"),
-                decision.rule_id,
+                rule_id,
             )
 
         out, err = _TailBuffer(self.max_output_bytes), _TailBuffer(self.max_output_bytes)
@@ -166,16 +181,16 @@ class CommandRunner:
         try:
             await asyncio.wait_for(
                 asyncio.gather(_pump(proc.stdout, out), _pump(proc.stderr, err), proc.wait()),
-                timeout=request.timeout_s,
+                timeout=timeout_s,
             )
         except TimeoutError:
             self._kill(proc)
             await proc.wait()
-            log.warning("command timed out", extra={**ctx, "timeout_s": request.timeout_s})
+            log.warning("command timed out", extra={**ctx, "timeout_s": timeout_s})
             return RunOutcome(
                 "failed",
-                FailureInfo(reason=f"timeout after {request.timeout_s}s"),
-                decision.rule_id,
+                FailureInfo(reason=f"timeout after {timeout_s}s"),
+                rule_id,
             )
 
         duration_ms = int((self.clock() - started) * 1000)
@@ -195,7 +210,7 @@ class CommandRunner:
                 "truncated": result.truncated,
             },
         )
-        return RunOutcome("completed", result, decision.rule_id)
+        return RunOutcome("completed", result, rule_id)
 
     @staticmethod
     def _kill(proc: asyncio.subprocess.Process) -> None:
