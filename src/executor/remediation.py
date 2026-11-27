@@ -33,6 +33,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -181,32 +182,45 @@ class IdempotencyStore:
     executor crashes in between, the key stays "started": the next attempt is refused rather than
     re-run, because we can't know how far the first attempt got. A human (or a new proposal with
     a new action_id) decides what to do next.
+
+    THREADS: usable from any thread. sqlite by default refuses a connection used outside the
+    thread that created it (`ProgrammingError`), which broke FastAPI's TestClient, since it runs
+    the app in a worker thread (Sai, #20). So `check_same_thread=False`, and a lock so the shared
+    connection never runs two statements at once. Ordering between requests is still the
+    Remediator's asyncio lock (gate 5); this lock only protects the connection.
     """
 
     def __init__(self, path: Path | str = ":memory:") -> None:
-        self.db = sqlite3.connect(str(path), isolation_level=None)  # autocommit; one row per write
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS runs (key TEXT PRIMARY KEY, request_hash TEXT NOT NULL,"
-            " status TEXT NOT NULL, outcome TEXT, started_at REAL NOT NULL, finished_at REAL)"
-        )
+        # autocommit; one row per write
+        self.db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+        self._lock = threading.Lock()
+        with self._lock:
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS runs (key TEXT PRIMARY KEY, request_hash TEXT NOT NULL,"
+                " status TEXT NOT NULL, outcome TEXT, started_at REAL NOT NULL, finished_at REAL)"
+            )
 
     def get(self, key: str) -> tuple[str, str, str | None] | None:
-        row = self.db.execute(
-            "SELECT request_hash, status, outcome FROM runs WHERE key = ?", (key,)
-        ).fetchone()
+        with self._lock:
+            row = self.db.execute(
+                "SELECT request_hash, status, outcome FROM runs WHERE key = ?", (key,)
+            ).fetchone()
         return tuple(row) if row else None  # type: ignore[return-value]
 
     def begin(self, key: str, request_hash: str) -> None:
-        self.db.execute(
-            "INSERT INTO runs (key, request_hash, status, started_at) VALUES (?, ?, 'started', ?)",
-            (key, request_hash, time.time()),
-        )
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO runs (key, request_hash, status, started_at)"
+                " VALUES (?, ?, 'started', ?)",
+                (key, request_hash, time.time()),
+            )
 
     def finish(self, key: str, outcome: RunOutcome) -> None:
-        self.db.execute(
-            "UPDATE runs SET status = 'done', outcome = ?, finished_at = ? WHERE key = ?",
-            (_dump_outcome(outcome), time.time(), key),
-        )
+        with self._lock:
+            self.db.execute(
+                "UPDATE runs SET status = 'done', outcome = ?, finished_at = ? WHERE key = ?",
+                (_dump_outcome(outcome), time.time(), key),
+            )
 
 
 def _dump_outcome(o: RunOutcome) -> str:
