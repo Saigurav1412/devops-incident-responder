@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from config import Settings
 from contracts import (
@@ -27,8 +28,9 @@ from contracts import (
     RejectionInfo,
     RemediateRequest,
 )
+from diagnoser.llm import ChatMessage, ChatModelError, ChatResult
 from diagnoser.nodes import health_check_argv
-from diagnoser.ports import ExecutorClientError, FixProposal, Reasoned
+from diagnoser.ports import ExecutorClientError, FixProposal, PolicySummaries, Reasoned
 
 ExecutorResult = CommandResult | RejectionInfo | FailureInfo
 
@@ -193,3 +195,66 @@ class FakeExecutorClient:
             for c in self.calls
             if isinstance(c, DiagnoseRequest) and tuple(c.command) == self.health_argv
         )
+
+
+# ---------------------------------------------------------------------------------------------
+# LLM seam fakes (for LLMReasoner tests and dry runs without an API key)
+# ---------------------------------------------------------------------------------------------
+
+
+class FakeChatModel:
+    """A ChatModel that answers from a script, in order, and records every call.
+
+    Script items: a reply string, or a ChatModelError instance to raise. Each reply costs
+    `input_tokens` + `output_tokens`. Running past the end of the script is a test bug.
+    """
+
+    def __init__(
+        self,
+        script: Sequence[str | ChatModelError],
+        input_tokens: int = 100,
+        output_tokens: int = 20,
+    ) -> None:
+        self.script = list(script)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete(
+        self,
+        messages: list[ChatMessage],
+        *,
+        schema: dict[str, Any],
+        schema_name: str,
+        max_output_tokens: int,
+    ) -> ChatResult:
+        self.calls.append(
+            {"messages": list(messages), "schema": schema, "schema_name": schema_name}
+        )
+        if not self.script:
+            raise AssertionError("FakeChatModel script exhausted")
+        item = self.script.pop(0)
+        if isinstance(item, ChatModelError):
+            raise item
+        return ChatResult(item, self.input_tokens, self.output_tokens)
+
+
+class StaticPolicy:
+    """A PolicySource with fixed text, or one that fails like an unreachable executor."""
+
+    def __init__(
+        self,
+        diagnose: str = "DIAGNOSE-POLICY",
+        remediate: str = "REMEDIATE-POLICY",
+        *,
+        fail: bool = False,
+    ) -> None:
+        self.summaries = PolicySummaries(diagnose, remediate)
+        self.fail = fail
+        self.calls = 0
+
+    async def policy_summaries(self) -> PolicySummaries:
+        self.calls += 1
+        if self.fail:
+            raise ExecutorClientError("agent_card_unavailable: ConnectError (fake)")
+        return self.summaries
