@@ -344,6 +344,41 @@ class Remediator:
         log.warning("remediation rejected", extra={**ctx, "rule_id": rule_id, "reason": reason})
         return _reject(rule_id, reason)
 
+    # -- for the diagnoser's prompt ------------------------------------------------------------
+
+    def summary(self) -> str:
+        """Plain-text description of the fixes this executor accepts, for the diagnoser's prompt.
+
+        Generated from remediation.yaml, so the prompt can't promise a fix the executor refuses
+        (Sai's review on PR #4/#6: an approved-but-refused fix costs the human a click). Served in
+        the Agent Card's `remediate` skill description.
+        """
+        p = self.policy
+        lines = [
+            "Fixes (one catalog action per proposal; needs human approval; params are strings).",
+            "Use compose SERVICE names in params: " + ", ".join(p.services) + ".",
+        ]
+        enabled = set(p.enabled_actions)
+        if "restart_service" in enabled:
+            lines.append(f"- restart_service service={'|'.join(p.services)}")
+        if "restore_config" in enabled:
+            pairs = ", ".join(
+                f"service={svc} file={rule.file}" for svc, rule in p.config_files.items()
+            )
+            lines.append(f"- restore_config {pairs} (restores the known-good file and applies it)")
+        if "scale_memory_limit" in enabled:
+            ranges = ", ".join(f"{svc} {r.min_mb}-{r.max_mb}" for svc, r in p.memory_limits.items())
+            lines.append(f"- scale_memory_limit service=SERVICE mb=N (MB ranges: {ranges})")
+        if "rollback_image" in enabled:
+            tags = ", ".join(
+                f"service={svc} tag={'|'.join(r.allowed)}" for svc, r in p.image_tags.items()
+            )
+            lines.append(f"- rollback_image {tags}")
+        disabled = sorted(REMEDIATION_ACTIONS - enabled)
+        if disabled:
+            lines.append(f"Not available here (refused even if approved): {', '.join(disabled)}.")
+        return "\n".join(lines)
+
     # -- planning: params -> steps -------------------------------------------------------------
 
     def _compose(self, *args: str) -> RunArgv:

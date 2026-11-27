@@ -27,3 +27,6 @@ evals/tmp/
 
 # target stack working copy (recreated by target/reset.sh)
 target/runtime/
+
+# executor state (idempotency store)
+var/

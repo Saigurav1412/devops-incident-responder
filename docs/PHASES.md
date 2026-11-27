@@ -41,7 +41,7 @@ Thanksgiving is Thu Nov 26. Plan for 2.5 working days, not 4.
 
 **Om**
 - [ ] GCE VM (e2-standard-2 or similar, no external IP) with Docker; target stack runs there (stack written: `target/`, runs locally first; GCP on hold until hosting account is decided)
-- [ ] Executor A2A server: Agent Card, two skills (`diagnose`, `remediate`), task lifecycle per INTERFACES §2
+- [x] Executor A2A server: Agent Card (skill descriptions = policy summaries), two skills, task lifecycle, ID-token auth (`src/executor/server.py`; local smoke test + Sai's client in a scratch merge; on the VM: pending GCP)
 - [x] Diagnostic command validator (allowlist parser, no shell) + unit tests (`src/security/`, PR #4)
 - [x] Diagnostic runner: fixed PATH, minimal env, timeout kills process group, output cap, redaction (`src/executor/runner.py`; live-stack test 2026-11-26 WSL2: all 28 allowed commands exit 0, no secret leaked)
 - [ ] Sandbox container + read-only Docker socket proxy for the runner

@@ -18,6 +18,7 @@ import pytest
 from contracts import DiagnoseRequest
 from executor import CommandRunner
 from security import CommandValidator
+
 from test_allowlist import ALLOWED  # same list: what we allow is exactly what we test for real
 
 pytestmark = [

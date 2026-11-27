@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # --- executor ---
     allowed_diagnoser_sa: str = ""
     max_output_bytes: int = Field(default=16_384, ge=1_024, le=1_048_576)
+    # Audience the diagnoser's Google ID token must carry. Empty = use executor_url (the usual
+    # choice: Cloud Run mints ID tokens for the URL it is calling).
+    executor_audience: str = ""
+    # sqlite file for the remediation idempotency store. Must survive executor restarts.
+    executor_state_path: str = "var/executor-state.sqlite3"
 
     # --- tracing ---
     langsmith_api_key: SecretStr | None = None

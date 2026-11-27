@@ -119,6 +119,30 @@ Auth: Cloud Run calls with a Google-signed ID token for `diagnoser-sa` in `Autho
 service-account email, and rejects a missing or unsupported `A2A-Version`, before reading the payload.
 No external IP on the VM.
 
+**Server side, implemented in `src/executor/server.py`** (run: `uv run python -m executor --host … --port …`):
+
+| Route | Auth | Notes |
+|---|---|---|
+| `GET /.well-known/agent-card.json` | bearer | skill descriptions = `CommandValidator.summary()` (`diagnose`) and `Remediator.summary()` (`remediate`): prompt-ready, generated from the enforced policy |
+| `POST /` (JSON-RPC) | bearer + `A2A-Version: 1.0` | `SendMessage` → one Task per command/fix; other methods (e.g. `GetTask`) as the SDK provides |
+| `GET /healthz` | none | liveness only |
+
+- Guard middleware runs first on every route except `/healthz`: no/invalid bearer → **401**, valid
+  token but not `ALLOWED_DIAGNOSER_SA` (or email not verified) → **403**, JSON-RPC without
+  `A2A-Version: 1.0` → **400**, body over 64 KB (also chunked) → **413**. Body is `{"error": "<short reason>"}`.
+- ID token checked with `google-auth` (`verify_oauth2_token`): signature, expiry, issuer, audience =
+  `EXECUTOR_AUDIENCE` (empty → `EXECUTOR_URL`).
+- Every task: `Task` enqueued first (SUBMITTED), then exactly one terminal state. `context_id` must
+  equal `incident_id` (`REJECTED`, `a2a.context_mismatch`); not exactly one JSON data part, or off-contract
+  payload → `REJECTED`, `a2a.bad_request` (field locations only, values never echoed). Any exception →
+  `FAILED`, reason `internal_error`; details only in the executor's logs.
+- `CancelTask` → `REJECTED` (`a2a.cancel`): a fix must not stop half-way.
+- Local development without GCP: `EXECUTOR_DEV_TOKEN` (≥ 32 chars) replaces ID-token checks, and the
+  executor refuses to start with it unless bound to `127.0.0.1`.
+- Tasks live in the SDK's in-memory task store (lost on restart; the idempotency store is what must persist).
+- Checked against Sai's `A2AExecutorClient` in a scratch merge of both stacks (2026-11-26): diagnose
+  completed/rejected, the exact `check_health` argv, remediate completed and bait-and-switch refused.
+
 ### 2.2 Request payload (exactly one `data` part per `Message`, `role: ROLE_USER`)
 
 The diagnoser sends one `SendMessage` per command or action. The message's `contextId` is the
@@ -343,4 +367,6 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 | `APPROVAL_TTL_S`, `MAX_ITERATIONS`, `MAX_REPLANS`, `MAX_TOOL_CALLS`, `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S` | diagnoser | |
 | `MEMORY_ENABLED`, `MAX_HYPOTHESES` | diagnoser | ablation switches |
 | `ALLOWED_DIAGNOSER_SA`, `MAX_OUTPUT_BYTES` | executor | |
+| `EXECUTOR_AUDIENCE`, `EXECUTOR_STATE_PATH` | executor | ID-token audience (empty → `EXECUTOR_URL`); sqlite idempotency store on a persistent disk |
+| `EXECUTOR_DEV_TOKEN` | executor | local dev only, ≥ 32 chars, refused unless bound to 127.0.0.1; never set on the VM |
 | `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | both | |
