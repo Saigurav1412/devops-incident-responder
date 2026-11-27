@@ -25,6 +25,7 @@ Newest at the bottom. Move an item from **Open** to **Decided** when both agree.
 | 2026-11-26 | Diagnostics: free-form argv, validated by a default-deny grammar (`src/security/allowlist.py`); remediation: typed catalog only (§2.4) | Diagnosis needs flexible read-only commands (the "terminal control" feature); changes need a fixed, approvable shape. Proposed by Om in PR (security-allowlist); Sai reviews |
 | 2026-11-26 | Remediation on this target: `restart_service`, `restore_config`, `scale_memory_limit`, `rollback_image` enabled; `set_env` and `prune_path` disabled | The agent only sees redacted secrets, so `set_env` can't write a correct `DATABASE_URL`; `restore_config` covers env drift safely. No fault needs `prune_path`, and deletion is the riskiest action. Names stay in the catalog, so enabling later is a policy change, not a contract change |
 
+| 2026-11-27 | `config` is a package (`src/config/__init__.py`) like the other src/ folders; no hatch force-include | The force-included single file was COPIED into site-packages even in the editable install, so outside pytest every edit to config was ignored until a reinstall; PR #16's new setting crashed the live run with `'Settings' object has no attribute 'health_settle_s'` while all tests passed. `tests/test_packaging.py` imports every src module in a clean interpreter and checks it resolves into src/. Proposed by Om on PR #17; Sai reviews |
 ## Open (resolve in Phase 0)
 
 | Question | Options | Leaning |

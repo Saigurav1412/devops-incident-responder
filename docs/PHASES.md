@@ -15,7 +15,7 @@ and in their own PROCESS_LOG.
 | Diagnoser agent (LangGraph graph, planning + self-correction) | Sai | `src/diagnoser/`, `src/prompts/` |
 | Long-term memory + Firestore checkpointer | Sai | `src/memory/` |
 | Slack approval surface, Cloud Run deploy | Sai | `src/approval/`, `deploy/cloudrun/` |
-| Shared contracts, config, logging | Both (PR + review from the other) | `src/contracts/`, `src/config.py`, `src/obs/` |
+| Shared contracts, config, logging | Both (PR + review from the other) | `src/contracts/`, `src/config/`, `src/obs/` |
 
 ---
 
