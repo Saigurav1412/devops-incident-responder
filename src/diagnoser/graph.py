@@ -118,7 +118,6 @@ def build_graph(
     graph.add_edge(n.NODE_INGEST, n.NODE_RECALL)
     graph.add_edge(n.NODE_RECALL, n.NODE_PLAN)
     graph.add_edge(n.NODE_PROPOSE, n.NODE_APPROVAL)
-    graph.add_edge(n.NODE_EXECUTE, n.NODE_HEALTH)
     graph.add_edge(n.NODE_SAVE, END)
     graph.add_edge(n.NODE_ESCALATE, END)
     graph.add_edge(n.NODE_BUDGET, END)
@@ -155,6 +154,14 @@ def build_graph(
         n.NODE_APPROVAL,
         nodes.route_after_approval,
         {n.NODE_EXECUTE: n.NODE_EXECUTE, n.ROUTE_REJECTED: END},
+    )
+    graph.add_conditional_edges(
+        n.NODE_EXECUTE,
+        nodes.route_after_execute,
+        {
+            n.NODE_HEALTH: n.NODE_HEALTH,  # the executor applied the fix: did it work?
+            n.NODE_ESCALATE: n.NODE_ESCALATE,  # refused / failed / non-zero exit / unreachable
+        },
     )
     graph.add_conditional_edges(
         n.NODE_HEALTH,
