@@ -100,6 +100,23 @@ rather than store a `verified` record for a fix that didn't run.
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
 and a Slack notice.
 
+### 1.1 Diagnoser HTTP API **[proposed]** — owner: Sai; callers: monitor, eval harness (Om)
+
+Implemented in `src/diagnoser/service.py` (`create_service(deps, poster)`). One Cloud Run service.
+
+| Endpoint | Auth | Request | Response |
+|---|---|---|---|
+| `POST /incidents` | `Authorization: Bearer <INCIDENT_API_TOKEN>` | an `Alert` (§4.1) as JSON; unknown fields, naive datetimes, `summary` > 500 chars → 422 | `202 {"incident_id", "status_url"}`; the graph runs in the background |
+| `GET /incidents/{incident_id}` | same bearer token | — | `200 {"incident_id", "outcome", "waiting_for_approval", "hypotheses": [{id, statement, status}], "proposed": {action, params} \| null, "budget": {iterations, replans, tool_calls, tokens}}`; unknown id → 404 |
+| `POST /slack/interactions` | Slack signature (§4.2) | Slack's form-encoded `payload` | empty 200 (or 401 / 413) |
+| `GET /healthz` | none | — | `{"status": "ok"}` |
+
+- Wrong or missing token → 401; `INCIDENT_API_TOKEN` unset → 503 `incident_api_token_not_configured` (fails closed).
+- Every alert starts a new incident with a fresh uuid `incident_id` (no de-duplication by `alert_id` yet).
+- Status never includes `observations` (raw, untrusted command output) or any token.
+- Callers poll `GET /incidents/{id}` until `outcome != "open"`. Whenever the graph pauses for approval,
+  including a second time after a failed health check, the service posts the approval message to Slack.
+
 ---
 
 ## 2. A2A: diagnoser ↔ executor **[proposed]** — owner: Om (server), Sai (client)
@@ -414,6 +431,7 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 | `EMBEDDING_MODEL` | diagnoser | |
 | `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
 | `HEALTH_URL` | diagnoser | what `check_health` curls, as seen from the VM; default `http://127.0.0.1:8088/health`; must match the executor's curl allowlist |
+| `INCIDENT_API_TOKEN` | diagnoser; monitor + eval harness send it | bearer token for `/incidents` (§1.1); Secret Manager in cloud; unset = intake refuses all |
 | `GCP_PROJECT`, `FIRESTORE_DATABASE` | diagnoser | |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_CHANNEL_ID` | diagnoser | |
 | `APPROVER_ALLOWLIST` | diagnoser | comma-separated Slack user ids |
