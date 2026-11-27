@@ -60,3 +60,8 @@
 - AI-generated (Claude Code): `openai_chat.py`, the Budget in/out split, settings, tests. My call: one adapter for OpenAI and local servers, strict schema with a json_object fallback.
 - Verified by: the real openai SDK against a mock transport (23 tests), an end-to-end graph run through the adapter, strict_schema checked equal to the SDK's own helper, 10 mutation checks.
 - Went right: before writing the strict-schema code I read the SDK's own helper instead of guessing; my #14 worry (that maxLength/pattern must be stripped) looks unfounded, since the SDK keeps them. Still unverified against the live API.
+
+## 2026-11-27 — runnable diagnoser (build_deps_from_settings, python -m diagnoser)
+- AI-generated (Claude Code): `wiring.py`, `__main__.py`, the lifespan hooks, 10 tests. My choices: list every config problem at once, and send the dev token only to a localhost executor.
+- Verified by: an in-process e2e against Om's real executor with a Slack-signed click → resolved; a subprocess test of the CLI's refusal; 6 mutations; and a manual smoke with both real processes on localhost.
+- Went wrong: (1) the smoke test crashed on the stale site-packages `config.py` (Om's #17 bug, reproduced live). (2) TestClient's worker thread broke Om's sqlite store; the diagnoser correctly escalated on the executor's FAILED answer, which was reassuring, and the test now runs in one event loop.

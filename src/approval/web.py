@@ -22,12 +22,18 @@ parse the form first would both break the signature and parse untrusted input be
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+
 from fastapi import APIRouter, BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from approval.handler import SlackApprovalHandler
 from approval.slack_signature import SlackSignatureError, verify_slack_request
 from obs.logging import get_logger
+
+# FastAPI's lifespan: app -> async context manager (startup before yield, shutdown after).
+Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
 log = get_logger(__name__)
 
@@ -82,10 +88,12 @@ def create_slack_router(handler: SlackApprovalHandler) -> APIRouter:
     return router
 
 
-def create_app(handler: SlackApprovalHandler) -> FastAPI:
-    """A minimal app: the Slack webhook plus a liveness probe. The full diagnoser service
-    (incident intake, graph construction from real deps) will include this router."""
-    app = FastAPI(title="incident-responder diagnoser", docs_url=None, redoc_url=None)
+def create_app(handler: SlackApprovalHandler, lifespan: Lifespan | None = None) -> FastAPI:
+    """A minimal app: the Slack webhook plus a liveness probe. diagnoser/service.py adds incident
+    intake; `lifespan` lets the caller close its HTTP clients on shutdown."""
+    app = FastAPI(
+        title="incident-responder diagnoser", docs_url=None, redoc_url=None, lifespan=lifespan
+    )
     app.include_router(create_slack_router(handler))
 
     @app.get("/healthz")

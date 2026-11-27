@@ -14,8 +14,9 @@ Layout:
   reasoner.py  the LLM-backed Reasoner: fenced prompt rendering, strict answer schemas, repair
              attempt, safe defaults (prompts in src/prompts/)
   service.py the HTTP service: POST/GET /incidents + the Slack webhook (FastAPI)
+  wiring.py  config -> real objects (build_deps_from_settings, startup checks); __main__.py runs it
 
-Not built yet: build_deps_from_settings() / a runnable entry point wiring the real reasoner.
+Not built yet: Google ID tokens to the executor, Firestore memory and checkpoints (GCP on hold).
 
 Shared shapes come from `contracts`; never redefine them here.
 """

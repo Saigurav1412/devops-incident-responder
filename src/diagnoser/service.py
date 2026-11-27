@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import hmac
 import uuid
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -161,10 +163,22 @@ def create_service(
     deps: DiagnoserDeps,
     poster: SlackPoster,
     checkpointer: BaseCheckpointSaver | None = None,
+    on_shutdown: Sequence[Callable[[], Awaitable[None]]] = (),
 ) -> FastAPI:
-    """Build the full diagnoser app around injected deps (fakes in tests, real ones later)."""
+    """Build the full diagnoser app around injected deps (fakes in tests, real ones from
+    diagnoser/wiring.py). `on_shutdown` callables run when the server stops (closing clients)."""
     service = DiagnoserService(deps, poster, checkpointer)
-    app = create_app(service.approvals)  # /slack/interactions + /healthz
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        for close in on_shutdown:
+            try:
+                await close()
+            except Exception as exc:  # noqa: BLE001 — one failing close mustn't skip the rest
+                log.warning("shutdown step failed", extra={"error": type(exc).__name__})
+
+    app = create_app(service.approvals, lifespan=lifespan)  # /slack/interactions + /healthz
     app.state.service = service  # handy for tests and debugging
     require_token = _token_checker(deps.settings)
 
