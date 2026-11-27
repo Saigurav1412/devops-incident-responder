@@ -54,7 +54,7 @@ class IncidentState(TypedDict):
     alert: Alert                 # §4.1
     recalled: list[IncidentRecord]      # from memory (§3), wrapped as data
     hypotheses: list[Hypothesis]
-    observations: list[Observation]     # results of diagnostic calls, append-only
+    observations: list[Observation]     # every A2A call + result, append-only (src/contracts/models.py)
     proposed: ProposedAction | None
     approval: ApprovalDecision | None   # §4.2
     outcome: Literal["open", "resolved", "escalated", "rejected", "budget_exceeded"]
@@ -239,7 +239,21 @@ class ApprovalDecision(BaseModel):
 - Pending approvals expire after `APPROVAL_TTL_S` (default 15 min) → `outcome="escalated"`.
 
 ### 4.3 Approval token
-`HMAC-SHA256(APPROVAL_SIGNING_KEY, incident_id | action_id | action | canonical_json(params) | expiry)`
+Implemented in `src/contracts/approval_token.py` (`mint`, `verify`), shared by both sides so the
+signed bytes can't drift.
+
+- Signed message: `"approval-v1" ␟ incident_id ␟ action_id ␟ action ␟ canonical_json(params) ␟ expiry`,
+  where `␟` is the byte `0x1F` (can't appear in an identifier) and `canonical_json` is sorted keys,
+  no spaces. The `approval-v1` prefix means this key's signatures can't be reused for anything else.
+- Token string: `"<expiry_unix_seconds>.<hex HMAC-SHA256>"`. The expiry is readable but signed, so
+  it can't be extended.
+- `APPROVAL_SIGNING_KEY` is **hex text**; both sides turn it into bytes only with
+  `Settings.approval_key_bytes()` (`bytes.fromhex`, whitespace stripped). It must decode to at least
+  32 bytes (64 hex chars; `python -c "import secrets; print(secrets.token_hex(32))"`); the helper and
+  `mint` both refuse shorter keys. Never `.encode()` the env value directly.
+- `verify` raises `ApprovalTokenError` with reason `approval_malformed`, `approval_invalid` or
+  `approval_expired`; the executor puts that reason in `RejectionInfo.reason`. The signature is
+  checked before the expiry, so a forged token always reports `approval_invalid`.
 
 - Minted **only** in the Slack webhook handler (and in the eval harness's scripted approver), never
   in a node the LLM can reach.
