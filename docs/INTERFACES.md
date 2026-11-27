@@ -276,6 +276,11 @@ through the same `CommandRunner` path as diagnostics (fixed PATH, no shell, time
 redaction). Result: `COMPLETED` with every step listed in `stdout` and the last step's exit code;
 `FAILED` (`remediate.step`) if a step couldn't run.
 
+Steps stop at the first non-zero exit, because later steps assume the earlier ones worked. So a
+`COMPLETED` remediation with a non-zero `exit_code` means **not fully applied**, never "applied but a
+step complained". It may be partly applied (e.g. `restore_config` copied the file, then the restart
+failed), so the diagnoser escalates (§1). Only `exit_code == 0` means every step ran.
+
 ---
 
 ## 3. Long-term memory **[proposed]** — owner: Sai
