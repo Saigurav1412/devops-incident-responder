@@ -197,6 +197,13 @@ def harness_settings(base: Settings) -> Settings:
 # ---------------------------------------------------------------------------------------------
 
 
+class GraphRunError(RuntimeError):
+    """The diagnoser's background run ended without an outcome and without pausing for approval:
+    the graph raised. The service logs only the exception TYPE (by design, no payloads), as
+    "slack interaction failed" or "incident run failed". Raised so the episode is recorded as
+    `error` at once instead of hanging until the episode timeout."""
+
+
 class ApprovalClickIgnoredError(RuntimeError):
     """The harness clicked Approve but the incident is still waiting on that proposal.
 
@@ -261,6 +268,19 @@ class DiagnoserAgent:
             incident_id = r.json()["incident_id"]
             ctx = {"incident_id": incident_id, "fault_id": fault.id}
 
+            async def check_ran(after: str) -> None:
+                # ASGITransport returns only after the app's background task has finished (the
+                # graph ran until it paused or ended). So "still open and not waiting" right
+                # after a graph-driving POST means the run raised. Only valid in-process.
+                st = (await http.get(f"/incidents/{incident_id}", headers=auth)).json()
+                if st["outcome"] == "open" and not st["waiting_for_approval"]:
+                    raise GraphRunError(
+                        f"diagnoser run ended without an outcome after {after} "
+                        f"(incident {incident_id}); the graph raised, see the service log"
+                    )
+
+            await check_ran("intake")
+
             clicked: dict[str, float] = {}  # action_id -> when the harness clicked it
             approval_wait = 0.0
             waiting_since: float | None = None
@@ -299,6 +319,7 @@ class DiagnoserAgent:
                         c = await http.post(SLACK_INTERACTIONS_PATH, content=body, headers=headers)
                         c.raise_for_status()
                         clicked[value["action_id"]] = time.monotonic()
+                        await check_ran(f"approving {value['action_id']}")
                         approval_wait += time.monotonic() - waiting_since
                         waiting_since = None
                         log.info("harness approved", extra={**ctx, "action_id": value["action_id"]})

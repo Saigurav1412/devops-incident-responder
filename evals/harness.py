@@ -124,10 +124,14 @@ async def run_episode(
                 break
             await sleep(timing.poll_s)
 
-        if resolved:
+        # A timeout or crash is never "resolved", even if the stack is healthy by now (e.g. the
+        # fix ran and the agent died afterwards): the agent didn't finish. Found 2026-11-27,
+        # when 15 crashed episodes were recorded as resolved with TTR = the timeout.
+        stack_healthy = resolved
+        if failure is not None:
+            outcome, resolved, ttr = failure, False, None
+        elif resolved:
             outcome = "resolved"
-        elif failure is not None:
-            outcome = failure
         elif report is not None and report.outcome in ("rejected", "budget_exceeded", "escalated"):
             outcome = report.outcome
         else:
@@ -156,7 +160,13 @@ async def run_episode(
         )
         log.info(
             "episode finished",
-            extra={**ctx, "outcome": outcome, "resolved": resolved, "ttr_s": ttr},
+            extra={
+                **ctx,
+                "outcome": outcome,
+                "resolved": resolved,
+                "ttr_s": ttr,
+                "stack_healthy": stack_healthy,
+            },
         )
         return EpisodeResult(record)
     finally:

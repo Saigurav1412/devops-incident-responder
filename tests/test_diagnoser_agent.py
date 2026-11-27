@@ -262,3 +262,35 @@ def test_bad_max_hypotheses_is_refused(target):  # noqa: F811
 
     with pytest.raises(ValidationError):
         Rig(target).handle("db-stopped-01", {"max_hypotheses": 0})
+
+
+class ExplodingMemory(InMemoryIncidentMemory):
+    """Raises in save(): the graph's last node, i.e. AFTER the approval click and the fix."""
+
+    def save(self, record):
+        raise AttributeError("boom")
+
+
+def test_a_graph_crash_after_approval_fails_fast(target):  # noqa: F811
+    # 2026-11-27: the resume after the click raised, the service logged only the type, and the
+    # harness waited out the 300 s timeout. Now it's an immediate GraphRunError.
+    from evals.diagnoser_agent import GraphRunError
+
+    rig = Rig(target)
+    rig.agent.memory = ExplodingMemory()
+    with pytest.raises(GraphRunError, match="after approving"):
+        rig.handle("db-stopped-01")
+    assert rig.remediation_runner.calls  # the fix did run before the crash
+
+
+def test_a_graph_crash_at_intake_fails_fast(target):  # noqa: F811
+    from evals.diagnoser_agent import GraphRunError
+
+    class ExplodingPlan(FaultScriptedReasoner):
+        async def plan(self, state):
+            raise AttributeError("boom")
+
+    rig = Rig(target)
+    rig.agent.reasoner_factory = ExplodingPlan
+    with pytest.raises(GraphRunError, match="after intake"):
+        rig.handle("db-stopped-01")

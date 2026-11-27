@@ -221,3 +221,42 @@ def test_every_fault_has_expected_params_for_the_scripted_baseline():
     for f in FAULTS:
         assert f.spec.expected_fix in enabled, f.id
         assert f.spec.expected_params, f.id
+
+
+def test_crash_after_fixing_is_not_resolved():
+    # The fix ran, then the agent died (2026-11-27: graph raised after remediation). The stack
+    # is healthy, but the agent didn't finish: error, not resolved, no TTR.
+    class FixThenCrash:
+        name = "fix-then-crash"
+
+        def __init__(self, ops):
+            self.ops = ops
+
+        async def handle(self, *a):
+            self.ops.broken = False
+            raise AttributeError("boom")
+
+    ops = FakeOps()
+    rec = episode(FixThenCrash(ops), ops).record
+    assert (rec.outcome, rec.resolved, rec.time_to_resolve_s) == ("error", False, None)
+
+
+def test_timeout_after_fixing_is_not_resolved():
+    # Fixes immediately, then hangs past the timeout (the 300 s episodes of 2026-11-27).
+    class FixThenHang:
+        name = "fix-then-hang"
+
+        def __init__(self, ops):
+            self.ops = ops
+
+        async def handle(self, *a):
+            self.ops.broken = False
+            await asyncio.sleep(1)
+
+    ops = FakeOps()
+    rec = episode(
+        FixThenHang(ops),
+        ops,
+        timing=Timing(poll_s=0, inject_check_s=0.05, settle_s=0.05, timeout_s=0.1),
+    ).record
+    assert (rec.outcome, rec.resolved, rec.time_to_resolve_s) == ("timeout", False, None)
