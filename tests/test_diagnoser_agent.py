@@ -68,7 +68,15 @@ class FakeProcessRunner(CommandRunner):
 
 
 def base_settings(**over) -> Settings:
-    fields = {"approval_signing_key": SecretStr(KEY_HEX), "max_wall_clock_s": 600, **over}
+    # health_settle_s=0: one health curl per check (PR #16's grace period off), so the scripted
+    # `health=(False, True)` means "first fix refuted, second approved", and no test sleeps.
+    # Before #16 is merged the key is simply ignored (Settings ignores unknown fields).
+    fields = {
+        "approval_signing_key": SecretStr(KEY_HEX),
+        "max_wall_clock_s": 600,
+        "health_settle_s": 0,
+        **over,
+    }
     return Settings.model_validate(fields)
 
 
