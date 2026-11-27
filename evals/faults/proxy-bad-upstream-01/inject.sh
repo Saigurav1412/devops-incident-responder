@@ -6,3 +6,6 @@ log "inject proxy-bad-upstream-01: upstream api:8000 -> api:8001"
 edit_in_place "$RUNTIME/nginx.conf" 's/server api:8000;/server api:8001;/'
 grep -q 'server api:8001;' "$RUNTIME/nginx.conf" || { log "edit did not apply"; exit 1; }
 tc exec -T proxy nginx -s reload >/dev/null
+
+proxy_returns_502() { [ "$(health_code)" = "502" ]; }
+confirm 20 "proxy answers 502" proxy_returns_502

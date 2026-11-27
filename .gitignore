@@ -30,3 +30,6 @@ target/runtime/
 
 # executor state (idempotency store)
 var/
+
+# eval run output (commit the dated results you report on, deliberately)
+evals/results/*/*/

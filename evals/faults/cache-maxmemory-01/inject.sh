@@ -14,3 +14,12 @@ done
 # which is the point, so its exit code is ignored.
 tc exec -T cache redis-cli EVAL \
   "for i=1,5000 do redis.call('SET','filler:'..i,string.rep('x',1024)) end return 1" 0 >/dev/null 2>&1 || true
+
+# The fault is "writes fail with OOM", not "Redis is restarting": check exactly that.
+# Capture, then grep: with pipefail, `cmd | grep -q` can fail when grep exits early (SIGPIPE).
+redis_refuses_writes() {
+  local out
+  out="$(tc exec -T cache redis-cli SET probe 1 2>&1)"
+  grep -q OOM <<<"$out"
+}
+confirm 20 "redis refuses writes with OOM" redis_refuses_writes

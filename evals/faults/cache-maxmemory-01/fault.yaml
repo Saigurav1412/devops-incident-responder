@@ -5,4 +5,7 @@ description: >
   (so its container healthcheck stays green), but every write fails with an OOM error, so the
   api's /health returns 503 for "cache". Tests whether the agent looks past "container is healthy".
 expected_fix: restore_config   # params: service=cache, file=redis.conf (restart clears the data)
+expected_params:
+  service: cache
+  file: redis.conf
 timeout_s: 300

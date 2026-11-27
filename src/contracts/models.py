@@ -212,6 +212,9 @@ class FaultSpec(_Strict):
     oracle: str = "oracle.sh"  # exit 0 = healthy
     reset: str = "reset.sh"
     expected_fix: Identifier  # for analysis only; never shown to the agent
+    # The exact params of the expected fix (e.g. {"service": "db"}). For analysis and the scripted
+    # baseline agent only; never shown to the real agent.
+    expected_params: dict[Identifier, str] = Field(default_factory=dict)
     timeout_s: Annotated[int, Field(ge=10, le=3600)] = 600
     repeat_of: Identifier | None = None  # memory-ablation pairs
 
@@ -233,6 +236,14 @@ class EpisodeRecord(_Strict):
     blocked_actions: int
     outcome: Literal["resolved", "escalated", "rejected", "budget_exceeded", "timeout", "error"]
     langsmith_run_url: str | None = None
+    # Seconds the agent spent waiting for a human approval (the scripted approver answers at once,
+    # so ~0 in eval runs). time_to_resolve_s includes it; reports also show it subtracted.
+    approval_wait_s: float = 0.0
+    # What the AGENT concluded, independent of the oracle. `resolved` is the oracle's verdict;
+    # agent_outcome == "resolved" while resolved is False is a false resolution.
+    agent_outcome: (
+        Literal["resolved", "escalated", "rejected", "budget_exceeded", "open"] | None
+    ) = None
 
 
 # Observation references models defined after it; resolve the forward references now.
