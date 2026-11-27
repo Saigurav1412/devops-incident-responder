@@ -24,6 +24,7 @@ dependencies = [
     "pydantic>=2.9,<3",            # contract models (src/contracts)
     "pydantic-settings>=2.6,<3",   # typed env config (src/config.py)
     "a2a-sdk[http-server]>=1.3,<2",  # A2A v1.0 SDK; checked in INTERFACES §2
+    "langgraph>=1.0,<2",
     "pyyaml>=6.0.4",
     "uvicorn>=0.32,<1",
     "google-auth>=2.30,<3",
