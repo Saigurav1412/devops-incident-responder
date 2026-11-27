@@ -66,6 +66,35 @@ class IncidentState(TypedDict):
 `verify_hypothesis --refuted--> plan_hypotheses` (replan, bounded by `MAX_REPLANS`)
 `verify_hypothesis --confirmed--> propose_fix → request_approval (interrupt) → execute_fix → check_health`
 `check_health --fail--> plan_hypotheses` · `check_health --pass--> save_memory → END`
+`execute_fix --fix not applied--> escalate` (remediate task not `completed` with `exit_code == 0`)
+`verify_hypothesis --still open--> diagnose` (gather more evidence; bounded by the caps below)
+`request_approval --reject--> END` (`outcome="rejected"`)
+Out of replans → `escalate → END` (`outcome="escalated"`). Any cap hit → `budget_exceeded → END`.
+
+Implemented in `src/diagnoser/` (graph.py wires these names; nodes.py has the routers).
+`incident_id` is the LangGraph `thread_id`. Approval pauses with `interrupt()`; the interrupt value is
+`{"kind": "approval_request", "incident_id", "proposed": ProposedAction as JSON, "requested_at": ISO-8601 UTC}` and the graph resumes
+with `Command(resume=ApprovalDecision)`. A decision for a different `action_id`, from an approver not in
+`APPROVER_ALLOWLIST`, or an approve without a token is ignored and the graph keeps waiting. The
+diagnoser never mints tokens. Budget caps are not checked between approval and `execute_fix`, so time
+spent waiting for a human never discards an approved fix. After `execute_fix`, the token is replaced
+with `"redacted"` in `approval` and in the stored `RemediateRequest` observation.
+
+`verify_hypothesis` treats the reasoner's assessment as a suggestion: only `status` and `confidence` of
+existing ids change; a refuted hypothesis stays refuted; unknown ids, reworded statements and omitted
+hypotheses are ignored (omitted = unchanged).
+
+`check_health` sends one fixed `DiagnoseRequest` built by code, `["curl", "-fsS", "--max-time", "5",
+HEALTH_URL]`, through the normal `diagnose` skill and records it as an observation (counts as a tool
+call). Healthy = `completed` with `exit_code == 0`; anything else (non-zero exit, rejected, failed,
+executor unreachable) is unhealthy and refutes the confirmed hypothesis. `HEALTH_URL` must be one of
+the executor allowlist's exact curl URLs.
+
+`check_health` only runs if the executor applied the fix: the remediate observation for the current
+`action_id` is `completed` with `exit_code == 0`. Otherwise (rejected, failed, unreachable, non-zero
+exit) the graph escalates without a health check and without refuting the hypothesis, because an
+unapplied fix says nothing about the diagnosis. `save_memory` checks the same thing again and raises
+rather than store a `verified` record for a fix that didn't run.
 
 **Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
@@ -303,6 +332,30 @@ class ApprovalDecision(BaseModel):
 - An approver not in `APPROVER_ALLOWLIST` → treated as no decision; message stays pending.
 - Pending approvals expire after `APPROVAL_TTL_S` (default 15 min) → `outcome="escalated"`.
 
+Implemented in `src/approval/` (`slack_signature.py`, `messages.py`, `handler.py`):
+- Signature: Slack's v0 scheme (`HMAC-SHA256(secret, "v0:" + timestamp + ":" + raw body)`), constant-time
+  compare, timestamps more than 5 min from now refused; an unset secret refuses everything.
+- The approval message shows LLM-written text (`rationale`, `params`) only as `plain_text`, capped, and
+  never in the notification fallback. Buttons carry only `{"incident_id", "action_id"}`; any extra
+  field in a returned value makes the click invalid.
+- A click resumes the graph only if: signed, a `block_actions` click on our approve/reject button,
+  approver allowlisted, the incident is paused on an `approval_request` interrupt, `action_id` matches
+  the current proposal, and `requested_at` is within `APPROVAL_TTL_S`. Otherwise it is ignored and the
+  incident stays paused. On approve, the token is minted over the action and params read from the
+  checkpoint, never from the click. Check-and-resume is serialised per process.
+- HTTP: `POST /slack/interactions` (`approval/web.py`) reads the raw body (≤ 64 KB, else 413), verifies
+  the signature synchronously (401 + `{"error": reason}` if not from Slack), answers an empty 200, and
+  runs the handler in a FastAPI background task, because Slack needs the ack within 3 s. Every signed
+  request gets 200, including ignored clicks, so Slack doesn't retry; retries that do arrive are
+  ignored because the incident is no longer paused. Cloud Run needs CPU always allocated
+  (`--no-cpu-throttling`) for the background resume. `GET /healthz` for probes.
+- Posting: `approval.slack_client.request_approval_in_slack(poster, settings, pause)` sends
+  `approval_message()` to `SLACK_CHANNEL_ID` via `chat.postMessage` (`SLACK_BOT_TOKEN`); a Slack
+  `{"ok": false}` reply raises `SlackApiError(error)`. The caller that runs the graph posts it when
+  `ainvoke` returns `__interrupt__`.
+- Not built yet: escalating on expiry *without* a click (today an expired approval just stays paused),
+  updating the Slack message after a decision, and cross-instance locking.
+
 ### 4.3 Approval token
 Implemented in `src/contracts/approval_token.py` (`mint`, `verify`), shared by both sides so the
 signed bytes can't drift.
@@ -383,6 +436,7 @@ Output: `evals/results/<date>/<run_id>/{episodes.jsonl, invalid.jsonl, summary.j
 | `OPENAI_API_KEY`, `LLM_MODEL` | diagnoser | model name never hard-coded |
 | `EMBEDDING_MODEL` | diagnoser | |
 | `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
+| `HEALTH_URL` | diagnoser | what `check_health` curls, as seen from the VM; default `http://127.0.0.1:8088/health`; must match the executor's curl allowlist |
 | `GCP_PROJECT`, `FIRESTORE_DATABASE` | diagnoser | |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_CHANNEL_ID` | diagnoser | |
 | `APPROVER_ALLOWLIST` | diagnoser | comma-separated Slack user ids |
