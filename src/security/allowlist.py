@@ -107,6 +107,7 @@ class ExecPrograms(_Model):
 
 class Policy(_Model):
     version: Literal[1]
+    compose_project: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
     containers: tuple[str, ...]
     docker_logs: DockerLogsPolicy
     curl: CurlPolicy
@@ -117,6 +118,10 @@ class Policy(_Model):
 def load_policy(path: Path = DEFAULT_POLICY_PATH) -> Policy:
     """Load and validate allowlist.yaml. A typo or unknown key fails here, at startup."""
     policy = Policy.model_validate(yaml.safe_load(path.read_text()))
+    prefix = f"{policy.compose_project}-"
+    foreign = [c for c in policy.containers if not c.startswith(prefix)]
+    if foreign:
+        raise ValueError(f"containers not in compose project {policy.compose_project}: {foreign}")
     unknown = set(policy.exec) - set(policy.containers)
     if unknown:
         raise ValueError(f"exec rules for containers not in `containers`: {sorted(unknown)}")
@@ -515,6 +520,10 @@ class CommandValidator:
 
     # -- for the diagnoser's prompt --------------------------------------------------------------
 
+    def service_of(self, container: str) -> str:
+        """`ir-target-api-1` -> `api` (compose names containers <project>-<service>-<n>)."""
+        return container.removeprefix(f"{self.policy.compose_project}-").rsplit("-", 1)[0]
+
     def summary(self) -> str:
         """Plain-text description of what may be run, for the diagnoser's system prompt.
 
@@ -522,13 +531,17 @@ class CommandValidator:
         """
         p = self.policy
         containers = ", ".join(p.containers)
+        mapping = ", ".join(f"{c} = {self.service_of(c)}" for c in p.containers)
         lines = [
             "Read-only diagnostic commands (argv lists, no shell). Anything else is rejected.",
+            "Short boolean flags may be combined (e.g. curl -fsS).",
             "- docker ps [-a] [--no-trunc]",
             f"- docker logs [--tail N<= {p.docker_logs.max_tail}] [--since 15m|2h<= {p.docker_logs.max_since_hours}h] [-t] CONTAINER",
             "- docker inspect CONTAINER [CONTAINER...]",
             "- docker stats --no-stream [CONTAINER...]",
             f"  CONTAINER is one of: {containers}",
+            f"  Container -> compose service: {mapping}. Diagnostics take CONTAINER names;"
+            " remediation params take the SERVICE name.",
         ]
         for container, progs in p.exec.items():
             if progs.redis_cli:

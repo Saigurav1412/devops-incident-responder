@@ -9,6 +9,11 @@
 
 version: 1
 
+# Compose project of the target (target/docker-compose.yml `name:`). Containers are named
+# <project>-<service>-<n>; the summary uses this to tell the agent which service name to use in
+# remediation params (Sai's review on PR #4: diagnostics take container names, fixes take services).
+compose_project: ir-target
+
 # Containers the agent may look at. Compose names them <project>-<service>-<n>; the project is
 # `ir-target` (target/docker-compose.yml). tests/test_allowlist.py checks this list matches the
 # compose file, so a renamed service can't silently fall out of (or into) the allowlist.

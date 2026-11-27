@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # --- executor ---
     allowed_diagnoser_sa: str = ""
     max_output_bytes: int = Field(default=16_384, ge=1_024, le=1_048_576)
+    # Audience the diagnoser's Google ID token must carry. Empty = use executor_url (the usual
+    # choice: Cloud Run mints ID tokens for the URL it is calling).
+    executor_audience: str = ""
+    # sqlite file for the remediation idempotency store. Must survive executor restarts.
+    executor_state_path: str = "var/executor-state.sqlite3"
 
     # --- tracing ---
     langsmith_api_key: SecretStr | None = None
@@ -74,7 +79,7 @@ class Settings(BaseSettings):
         sides, makes that impossible.
 
         Format: hex, at least 32 bytes after decoding (64 hex characters). Generate one with
-            python -c "import secrets; print(secrets.token_hex(32))"
+            uv run python -c "import secrets; print(secrets.token_hex(32))"
         Surrounding whitespace is ignored (a trailing newline from Secret Manager or a copy-paste
         must not change the key).
 
@@ -93,7 +98,7 @@ class Settings(BaseSettings):
             # so nothing about the secret reaches logs.
             raise ValueError(
                 "APPROVAL_SIGNING_KEY must be hex; generate one with "
-                '`python -c "import secrets; print(secrets.token_hex(32))"`'
+                '`uv run python -c "import secrets; print(secrets.token_hex(32))"`'
             ) from None
         if len(key) < MIN_KEY_BYTES:
             raise ValueError(
