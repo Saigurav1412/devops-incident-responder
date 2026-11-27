@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     # --- LLM (diagnoser) ---
     openai_api_key: SecretStr | None = None
     llm_model: str = ""
+    # OpenAI-compatible endpoint for the diagnoser's LLM (diagnoser/openai_chat.py). Empty = the
+    # OpenAI API. Set it to use another OpenAI-compatible server (e.g. a local Ollama at
+    # http://localhost:11434/v1) with no code change (DECISIONS: LLM row).
+    llm_base_url: str = ""
+    # Per-call timeout and the SDK's own retry count for transient errors (429, 5xx, network).
+    # The reasoner itself never retries a provider error (it applies its safe default instead).
+    llm_timeout_s: float = Field(default=60.0, ge=5.0, le=600.0)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
     embedding_model: str = ""
 
     # --- GCP ---

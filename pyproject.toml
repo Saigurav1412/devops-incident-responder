@@ -30,6 +30,7 @@ dependencies = [
     "uvicorn>=0.32,<1",            # ASGI server that runs the FastAPI app (Cloud Run)
     "pyyaml>=6.0.4",
     "google-auth>=2.30,<3",
+    "openai>=1.60,<3",
 ]
 
 [dependency-groups]

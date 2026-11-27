@@ -47,7 +47,10 @@ class Reasoned[T]:
     """
 
     value: T
-    tokens: int = 0
+    tokens: int = 0  # total; what the token cap counts
+    # Input/output split when the reasoner knows it (for cost); 0 = unknown.
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 @dataclass(frozen=True)
@@ -74,9 +77,13 @@ class ReasonerError(Exception):
     the budget still counts them.
     """
 
-    def __init__(self, message: str, tokens: int = 0) -> None:
+    def __init__(
+        self, message: str, tokens: int = 0, tokens_in: int = 0, tokens_out: int = 0
+    ) -> None:
         super().__init__(message)
         self.tokens = tokens
+        self.tokens_in = tokens_in
+        self.tokens_out = tokens_out
 
 
 @dataclass(frozen=True)

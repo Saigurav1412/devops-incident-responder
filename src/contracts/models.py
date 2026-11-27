@@ -95,7 +95,12 @@ class Budget(_Strict):
     iterations: int = 0
     replans: int = 0
     tool_calls: int = 0
-    tokens: int = 0
+    tokens: int = 0  # the total the MAX_TOKENS_PER_INCIDENT cap checks
+    # The split, for cost reporting (the eval prices input and output differently). Filled when
+    # the reasoner knows it (the LLM reasoner does); 0 from reasoners that report only a total
+    # (the scripted fakes), so tokens_in + tokens_out <= tokens.
+    tokens_in: int = 0
+    tokens_out: int = 0
     started_at: AwareDatetime
 
 

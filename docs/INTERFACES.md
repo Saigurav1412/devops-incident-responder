@@ -58,7 +58,7 @@ class IncidentState(TypedDict):
     proposed: ProposedAction | None
     approval: ApprovalDecision | None   # §4.2
     outcome: Literal["open", "resolved", "escalated", "rejected", "budget_exceeded"]
-    budget: Budget               # counters: iterations, tool_calls, tokens, started_at
+    budget: Budget               # counters: iterations, replans, tool_calls, tokens (+ tokens_in/tokens_out split), started_at
 ```
 
 **Nodes (fixed names, used in traces and the code map):**
@@ -112,6 +112,15 @@ rather than store a `verified` record for a fix that didn't run.
   raises `ReasonerError` (→ escalate). Provider errors are not retried by the reasoner. Tokens of every
   attempt, failed ones included, go to the budget.
 - If the executor's card can't be fetched, no LLM call is made and the same defaults apply.
+- Tokens: `Budget.tokens` (the total the cap checks) plus `tokens_in` / `tokens_out` for cost. The LLM
+  reasoner fills all three; reasoners that report only a total (scripted fakes) leave the split at 0.
+- **Provider adapter** (`src/diagnoser/openai_chat.py`, `OpenAIChatModel`): any OpenAI-compatible
+  chat-completions API via the `openai` SDK; `LLM_BASE_URL` empty = OpenAI. Sends
+  `response_format=json_schema` with `strict: true` (schema made strict by `strict_schema()`: every
+  object `additionalProperties: false` and all properties `required`; identical to the SDK's own rules,
+  checked by a test) and `max_completion_tokens`; no `temperature`. A 400 gets one retry with
+  `json_object`. Errors become `ChatModelError("<status> <ErrorType>")` (no key, prompt or body).
+  A refusal or empty answer is an error. Missing `usage` counts 0 tokens.
 - The policy summaries are cached for the diagnoser's process lifetime. **Deploy note:** after an
   executor redeploy that changes `allowlist.yaml` / `remediation.yaml`, restart the diagnoser too
   (until then the prompt shows the old policy; the executor still enforces the new one).
@@ -127,7 +136,7 @@ Implemented in `src/diagnoser/service.py` (`create_service(deps, poster)`). One 
 | Endpoint | Auth | Request | Response |
 |---|---|---|---|
 | `POST /incidents` | `Authorization: Bearer <INCIDENT_API_TOKEN>` | an `Alert` (§4.1) as JSON; unknown fields, naive datetimes, `summary` > 500 chars → 422 | `202 {"incident_id", "status_url"}`; the graph runs in the background |
-| `GET /incidents/{incident_id}` | same bearer token | — | `200 {"incident_id", "outcome", "waiting_for_approval", "hypotheses": [{id, statement, status}], "proposed": {action, params} \| null, "budget": {iterations, replans, tool_calls, tokens}}`; unknown id → 404 |
+| `GET /incidents/{incident_id}` | same bearer token | — | `200 {"incident_id", "outcome", "waiting_for_approval", "hypotheses": [{id, statement, status}], "proposed": {action, params} \| null, "budget": {iterations, replans, tool_calls, tokens, tokens_in, tokens_out}}`; unknown id → 404 |
 | `POST /slack/interactions` | Slack signature (§4.2) | Slack's form-encoded `payload` | empty 200 (or 401 / 413) |
 | `GET /healthz` | none | — | `{"status": "ok"}` |
 
@@ -472,7 +481,8 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 
 | Var | Used by | Notes |
 |---|---|---|
-| `OPENAI_API_KEY`, `LLM_MODEL` | diagnoser | model name never hard-coded |
+| `OPENAI_API_KEY`, `LLM_MODEL` | diagnoser | model name never hard-coded; key may be empty when `LLM_BASE_URL` is set (local servers) |
+| `LLM_BASE_URL`, `LLM_TIMEOUT_S`, `LLM_MAX_RETRIES` | diagnoser | OpenAI-compatible endpoint (empty = OpenAI); per-call timeout (60); SDK retries for 429/5xx/network (2) |
 | `EMBEDDING_MODEL` | diagnoser | |
 | `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
 | `HEALTH_URL` | diagnoser | what `check_health` curls, as seen from the VM; default `http://127.0.0.1:8088/health`; must match the executor's curl allowlist |

@@ -34,7 +34,7 @@ from contracts import (
     RemediateRequest,
 )
 from diagnoser.budget import budget_exceeded_reason
-from diagnoser.ports import DiagnoserDeps, ExecutorClientError, ReasonerError
+from diagnoser.ports import DiagnoserDeps, ExecutorClientError, Reasoned, ReasonerError
 from obs.logging import get_logger
 
 log = get_logger(__name__)
@@ -172,6 +172,15 @@ class DiagnoserNodes:
         log.info(message, extra={"incident_id": state["incident_id"], **fields})
 
     @staticmethod
+    def _tokens(answer: Reasoned[Any] | ReasonerError) -> dict[str, int]:
+        """Budget increments for one reasoner answer (or failure): the total and its split."""
+        return {
+            "tokens": answer.tokens,
+            "tokens_in": answer.tokens_in,
+            "tokens_out": answer.tokens_out,
+        }
+
+    @staticmethod
     def _add_budget(state: IncidentState, **increments: int) -> Budget:
         """Return a NEW Budget with counters increased. Never mutate the model in the state:
         LangGraph checkpoints by value, and mutating in place makes checkpoints lie."""
@@ -250,7 +259,7 @@ class DiagnoserNodes:
             for i, h in enumerate(new)
         ]
 
-        increments = {"tokens": answer.tokens}
+        increments = self._tokens(answer)
         if is_replan:
             increments["replans"] = 1
         self._log(state, "hypotheses planned", count=len(renumbered), replan=is_replan)
@@ -271,7 +280,7 @@ class DiagnoserNodes:
         answer = await self.deps.reasoner.next_command(state)
         if answer.value is None:
             # Nothing more worth checking; verify_hypothesis decides with what we have.
-            return {"budget": self._add_budget(state, tokens=answer.tokens)}
+            return {"budget": self._add_budget(state, **self._tokens(answer))}
 
         request = DiagnoseRequest(incident_id=state["incident_id"], command=answer.value)
         observation = await self._call_executor(state, request)
@@ -280,7 +289,7 @@ class DiagnoserNodes:
             # Append-only: build a new list rather than .append(), for the same checkpoint reason
             # as _add_budget.
             "observations": [*state["observations"], observation],
-            "budget": self._add_budget(state, tokens=answer.tokens, tool_calls=1),
+            "budget": self._add_budget(state, **self._tokens(answer), tool_calls=1),
         }
 
     async def verify_hypothesis(self, state: IncidentState) -> dict[str, Any]:
@@ -296,7 +305,7 @@ class DiagnoserNodes:
         self._log(state, "hypotheses assessed", statuses={h.id: h.status for h in merged})
         return {
             "hypotheses": merged,
-            "budget": self._add_budget(state, tokens=answer.tokens, iterations=1),
+            "budget": self._add_budget(state, **self._tokens(answer), iterations=1),
         }
 
     async def propose_fix(self, state: IncidentState) -> dict[str, Any]:
@@ -309,7 +318,7 @@ class DiagnoserNodes:
             answer = await self.deps.reasoner.propose(state)
         except ReasonerError as exc:
             self._log(state, "no fix proposal, escalating", error=str(exc))
-            return {"proposed": None, "budget": self._add_budget(state, tokens=exc.tokens)}
+            return {"proposed": None, "budget": self._add_budget(state, **self._tokens(exc))}
         proposal = answer.value
         proposed = ProposedAction(
             action_id=str(uuid.uuid4()),
@@ -319,7 +328,7 @@ class DiagnoserNodes:
             rollback=proposal.rollback,
         )
         self._log(state, "fix proposed", action=proposed.action, action_id=proposed.action_id)
-        return {"proposed": proposed, "budget": self._add_budget(state, tokens=answer.tokens)}
+        return {"proposed": proposed, "budget": self._add_budget(state, **self._tokens(answer))}
 
     async def request_approval(self, state: IncidentState) -> dict[str, Any]:
         """Pause the graph until a human decides (LangGraph `interrupt`).

@@ -151,6 +151,8 @@ class DiagnoserService:
                 "replans": budget.replans,
                 "tool_calls": budget.tool_calls,
                 "tokens": budget.tokens,
+                "tokens_in": budget.tokens_in,
+                "tokens_out": budget.tokens_out,
             },
         }
 

@@ -158,6 +158,16 @@ def test_intake_runs_graph_posts_approval_and_status_shows_waiting():
     assert status["waiting_for_approval"] is True
     assert status["proposed"] == {"action": "restart_service", "params": {"service": "db"}}
     assert "observations" not in status  # raw command output is never returned
+    # The token split is exposed for the eval's cost numbers (0 here: the scripted reasoner
+    # reports no split).
+    assert set(status["budget"]) == {
+        "iterations",
+        "replans",
+        "tool_calls",
+        "tokens",
+        "tokens_in",
+        "tokens_out",
+    }
 
 
 def test_full_incident_over_http_intake_slack_click_status():
