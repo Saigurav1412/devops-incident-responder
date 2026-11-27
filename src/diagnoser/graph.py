@@ -117,7 +117,6 @@ def build_graph(
     graph.add_edge(START, n.NODE_INGEST)
     graph.add_edge(n.NODE_INGEST, n.NODE_RECALL)
     graph.add_edge(n.NODE_RECALL, n.NODE_PLAN)
-    graph.add_edge(n.NODE_PROPOSE, n.NODE_APPROVAL)
     graph.add_edge(n.NODE_SAVE, END)
     graph.add_edge(n.NODE_ESCALATE, END)
     graph.add_edge(n.NODE_BUDGET, END)
@@ -154,6 +153,11 @@ def build_graph(
         n.NODE_APPROVAL,
         nodes.route_after_approval,
         {n.NODE_EXECUTE: n.NODE_EXECUTE, n.ROUTE_REJECTED: END},
+    )
+    graph.add_conditional_edges(
+        n.NODE_PROPOSE,
+        nodes.route_after_propose,
+        {n.NODE_APPROVAL: n.NODE_APPROVAL, n.NODE_ESCALATE: n.NODE_ESCALATE},
     )
     graph.add_conditional_edges(
         n.NODE_EXECUTE,
