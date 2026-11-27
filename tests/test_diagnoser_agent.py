@@ -294,3 +294,21 @@ def test_a_graph_crash_at_intake_fails_fast(target):  # noqa: F811
     rig.agent.reasoner_factory = ExplodingPlan
     with pytest.raises(GraphRunError, match="after intake"):
         rig.handle("db-stopped-01")
+
+
+def test_approval_wait_excludes_the_agents_work_after_the_click(target):  # noqa: F811
+    # Sai's probe (#15 review): a 1.5 s remediation was reported as 1.52 s "waiting for a human",
+    # because the wait was measured after the click's POST, which returns only after the resume.
+    rig = Rig(target)
+    rig.remediation_runner.delay = 0.5
+    report = rig.handle("db-stopped-01")
+    assert report.outcome == "resolved"
+    assert report.approval_wait_s < 0.2
+
+
+def test_every_replan_round_runs_its_diagnostic(target):  # noqa: F811
+    # Health curls are `diagnose` observations too; they must not use up the scripted
+    # reasoner's one-diagnostic-per-round. Round 1 fails its health check, round 2 passes.
+    rig = Rig(target, health=(False, True))
+    rig.handle("db-stopped-01")
+    assert sum(1 for a in rig.runner.argvs if a == ["docker", "ps", "-a"]) == 2

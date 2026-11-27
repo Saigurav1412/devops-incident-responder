@@ -89,10 +89,16 @@ class FaultScriptedReasoner:
         return Reasoned([Hypothesis(id="new1", statement=statement)])
 
     async def next_command(self, state: IncidentState) -> Reasoned[list[str] | None]:
-        # One diagnostic per hypothesis round, then "nothing more to check".
-        open_ids = {h.id for h in state["hypotheses"] if h.status == "open"}
-        already = sum(1 for o in state["observations"] if o.skill == "diagnose")
-        return Reasoned(list(SCRIPTED_DIAGNOSTIC) if already < len(open_ids) else None)
+        # One diagnostic per hypothesis round, then "nothing more to check". This reasoner plans
+        # one hypothesis per round, so rounds so far = hypotheses so far. Count only OUR
+        # diagnostic: check_health's curls are `diagnose` observations too (Sai, #15 review).
+        rounds = len(state["hypotheses"])
+        already = sum(
+            1
+            for o in state["observations"]
+            if o.skill == "diagnose" and list(o.request.command) == SCRIPTED_DIAGNOSTIC
+        )
+        return Reasoned(list(SCRIPTED_DIAGNOSTIC) if already < rounds else None)
 
     async def assess(self, state: IncidentState) -> Reasoned[list[Hypothesis]]:
         return Reasoned(
@@ -313,6 +319,11 @@ class DiagnoserAgent:
                         )
                     if pending:
                         value = pending[-1]  # newest proposal; older ones are stale by design
+                        # Measure the wait BEFORE the click: in-process the POST returns only
+                        # after the resume has finished (fix, health check, any replan), and
+                        # that is the agent's work, not waiting for a human. (Sai, #15 review.)
+                        approval_wait += time.monotonic() - waiting_since
+                        waiting_since = None
                         body, headers = signed_click(
                             secret, value, user_id=HARNESS_APPROVER, now=self.wall_clock()
                         )
@@ -320,8 +331,6 @@ class DiagnoserAgent:
                         c.raise_for_status()
                         clicked[value["action_id"]] = time.monotonic()
                         await check_ran(f"approving {value['action_id']}")
-                        approval_wait += time.monotonic() - waiting_since
-                        waiting_since = None
                         log.info("harness approved", extra={**ctx, "action_id": value["action_id"]})
                         continue
                 await asyncio.sleep(self.poll_s)
