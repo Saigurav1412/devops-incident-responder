@@ -52,3 +52,6 @@
 - Merged Om's #4–#6, #12 and my #7–#11 into main in order (Claude Code ran a local dry run first to pick the order with the fewest conflict points: 2; conflicts only in DECISIONS/pyproject/uv.lock). Final main: 408 passed, CI green.
 - Om's #14 review found two real gaps in my AI-generated reasoner: `truncated` ignored stderr, and `ensure_ascii=False` let Unicode line separators through the fence. Fixed with tests written first (they failed, then passed).
 - Lesson: my own injection test only used `\n`; a reviewer probing other "newline" characters found what my test didn't.
+
+## 2026-11-27 — reasoner follow-ups
+- AI-generated (Claude Code): lossless merging of identical consecutive observations in the prompt, so #16's health retries don't push diagnostic evidence out of the 12-entry window; the `is None` fix Om spotted. Tests written first; 3 mutations killed.

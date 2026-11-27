@@ -61,7 +61,7 @@ PROMPT_VERSION = "v1"
 # Prompt-size caps. WHY: a log dump must not crowd out the instructions or blow the token cap in
 # one call. Tails, because the newest lines of a log are usually the ones that matter.
 OUTPUT_TAIL_CHARS = 2_000  # per stdout/stderr, per observation
-RECENT_OBSERVATIONS = 12  # shown in full; older ones are listed without output
+RECENT_OBSERVATIONS = 12  # entries shown with output; older ones are listed without it
 TEXT_CHARS = 300  # recalled-memory fields, hypothesis statements
 POLICY_CHARS = 8_000  # each policy summary (Om's are ~1 KB today)
 BAD_REPLY_CHARS = 2_000  # how much of an invalid reply is echoed back in the repair turn
@@ -230,6 +230,34 @@ def _observation_payload(n: int, obs: Observation, *, with_output: bool) -> dict
     return item
 
 
+def _same_result(a: Observation, b: Observation) -> bool:
+    """Same request and an identical answer, so merging them loses nothing.
+
+    WHY: check_health retries its fixed curl (PR #16), so a fix that didn't work leaves up to ~11
+    identical observations. Listed one by one they would fill the output window and push the
+    diagnostic evidence out of the prompt right when the replan needs it. Only exact repeats are
+    merged: a different exit code, state or output starts a new entry.
+    """
+    return (
+        a.skill == b.skill
+        and a.request.model_dump(exclude={"approval_token"})
+        == b.request.model_dump(exclude={"approval_token"})
+        and a.state == b.state
+        and a.result == b.result
+    )
+
+
+def _merge_repeats(observations: list[Observation]) -> list[tuple[int, int, Observation]]:
+    """Runs of identical consecutive observations -> (first n, last n, observation), 1-based."""
+    runs: list[tuple[int, int, Observation]] = []
+    for i, o in enumerate(observations, start=1):
+        if runs and _same_result(runs[-1][2], o):
+            runs[-1] = (runs[-1][0], i, runs[-1][2])
+        else:
+            runs.append((i, i, o))
+    return runs
+
+
 def _recalled_payload(record: IncidentRecord) -> dict[str, Any]:
     return {
         "symptoms": _clip(record.symptoms),
@@ -281,14 +309,20 @@ def render_incident(state: IncidentState, settings_view: dict[str, int], nonce: 
         "",
     ]
     observations = state["observations"]
-    first_full = max(0, len(observations) - RECENT_OBSERVATIONS)
-    payload = [
-        _observation_payload(i + 1, o, with_output=i >= first_full)
-        for i, o in enumerate(observations)
-    ]
+    runs = _merge_repeats(observations)
+    # The output window counts ENTRIES (after merging), not raw observations.
+    first_full = max(0, len(runs) - RECENT_OBSERVATIONS)
+    payload = []
+    for j, (first, last, o) in enumerate(runs):
+        item = _observation_payload(first, o, with_output=j >= first_full)
+        if last > first:
+            item["n_last"] = last
+            item["repeated"] = last - first + 1
+        payload.append(item)
     parts += [
-        f"## Observations ({len(observations)}, oldest first; output shown for the last "
-        f"{min(len(observations), RECENT_OBSERVATIONS)})",
+        f"## Observations ({len(observations)} in {len(runs)} entries, oldest first; identical "
+        f"consecutive results merged with a `repeated` count; output shown for the last "
+        f"{min(len(runs), RECENT_OBSERVATIONS)} entries)",
         fence.wrap(payload) if payload else "none yet",
         "",
         "## Budget",
