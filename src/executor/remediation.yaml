@@ -1,0 +1,50 @@
+# Remediation policy: which catalog actions this executor performs on this target, and with which
+# parameter values (INTERFACES §2.4). Action NAMES come from contracts.catalog; this file decides
+# which are enabled here and what each may touch. Default-deny: anything not listed is refused,
+# even with a valid approval token. An approval says "a human agreed"; this file says "and it's
+# something this executor is allowed to do at all".
+
+version: 1
+
+# docker compose project and file for the target (target/docker-compose.yml, run with cwd = target/).
+compose_project: ir-target
+
+# Compose services the actions may act on (target/docker-compose.yml).
+services: [proxy, api, db, cache]
+
+enabled_actions:
+  - restart_service
+  - restore_config
+  - scale_memory_limit
+  - rollback_image
+  # set_env: disabled. The agent only ever sees redacted values (e.g. the DB password as ***),
+  #   so it can't write a correct DATABASE_URL; restore_config is the safe way to undo env drift.
+  # prune_path: disabled. No fault needs it, and deleting files is the riskiest action.
+
+# restore_config: which known-good file belongs to which service, and how it is applied after
+# being copied from target/known-good/ into target/runtime/.
+config_files:
+  proxy:
+    file: nginx.conf
+    apply: reload        # nginx -s reload inside the proxy container
+  api:
+    file: api.env
+    apply: recreate      # env_file is only read when the container is created
+  cache:
+    file: redis.conf
+    apply: restart       # redis reads its config at start; restart also clears the cache
+
+# scale_memory_limit: the stack.env variable per service and the allowed range in MB.
+memory_limits:
+  proxy: {var: PROXY_MEM_LIMIT, min_mb: 32, max_mb: 256}
+  api:   {var: API_MEM_LIMIT,   min_mb: 128, max_mb: 1024}
+  db:    {var: DB_MEM_LIMIT,    min_mb: 128, max_mb: 1024}
+  cache: {var: CACHE_MEM_LIMIT, min_mb: 64,  max_mb: 512}
+
+# rollback_image: tags a service may be set to. Only known-good releases; never "latest" or
+# anything the agent read in a log.
+image_tags:
+  api: {var: API_IMAGE_TAG, allowed: [good]}
+
+timeouts_s:
+  step: 120              # each docker compose call

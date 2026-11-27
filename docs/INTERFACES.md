@@ -148,6 +148,30 @@ Auth: Cloud Run calls with a Google-signed ID token for `diagnoser-sa` in `Autho
 service-account email, and rejects a missing or unsupported `A2A-Version`, before reading the payload.
 No external IP on the VM.
 
+**Server side, implemented in `src/executor/server.py`** (run: `uv run python -m executor --host … --port …`):
+
+| Route | Auth | Notes |
+|---|---|---|
+| `GET /.well-known/agent-card.json` | bearer | skill descriptions = `CommandValidator.summary()` (`diagnose`) and `Remediator.summary()` (`remediate`): prompt-ready, generated from the enforced policy |
+| `POST /` (JSON-RPC) | bearer + `A2A-Version: 1.0` | `SendMessage` → one Task per command/fix; other methods (e.g. `GetTask`) as the SDK provides |
+| `GET /healthz` | none | liveness only |
+
+- Guard middleware runs first on every route except `/healthz`: no/invalid bearer → **401**, valid
+  token but not `ALLOWED_DIAGNOSER_SA` (or email not verified) → **403**, JSON-RPC without
+  `A2A-Version: 1.0` → **400**, body over 64 KB (also chunked) → **413**. Body is `{"error": "<short reason>"}`.
+- ID token checked with `google-auth` (`verify_oauth2_token`): signature, expiry, issuer, audience =
+  `EXECUTOR_AUDIENCE` (empty → `EXECUTOR_URL`).
+- Every task: `Task` enqueued first (SUBMITTED), then exactly one terminal state. `context_id` must
+  equal `incident_id` (`REJECTED`, `a2a.context_mismatch`); not exactly one JSON data part, or off-contract
+  payload → `REJECTED`, `a2a.bad_request` (field locations only, values never echoed). Any exception →
+  `FAILED`, reason `internal_error`; details only in the executor's logs.
+- `CancelTask` → `REJECTED` (`a2a.cancel`): a fix must not stop half-way.
+- Local development without GCP: `EXECUTOR_DEV_TOKEN` (≥ 32 chars) replaces ID-token checks, and the
+  executor refuses to start with it unless bound to `127.0.0.1`.
+- Tasks live in the SDK's in-memory task store (lost on restart; the idempotency store is what must persist).
+- Checked against Sai's `A2AExecutorClient` in a scratch merge of both stacks (2026-11-26): diagnose
+  completed/rejected, the exact `check_health` argv, remediate completed and bait-and-switch refused.
+
 ### 2.2 Request payload (exactly one `data` part per `Message`, `role: ROLE_USER`)
 
 The diagnoser sends one `SendMessage` per command or action. The message's `contextId` is the
@@ -194,22 +218,63 @@ them as untrusted data (they are an injection surface: log lines are attacker-co
 **Diagnostics (`diagnose`):**
 - argv only, executed with `subprocess.run(..., shell=False)` inside a sandbox container with the
   Docker socket proxied read-only and the target's config mounted read-only
-- binary allowlist + per-binary argument rules in `src/security/allowlist.yaml`
-  (e.g. `docker` only with `ps | logs | inspect | stats --no-stream`; `curl` only to target-stack hosts)
-- any shell metacharacter, path outside the allowed roots, or unknown flag → `rejected`
+- validated by `security.CommandValidator.check(argv)` (`src/security/allowlist.py`): default-deny
+  grammar per binary in code, allowed values (containers, URLs, files, limits) in
+  `src/security/allowlist.yaml`. A refusal returns `rule_id` + a reason written for the LLM to read
+- allowed today: `docker ps | logs | inspect | stats --no-stream`, `docker exec` of only
+  `redis-cli` (read commands) in cache, `pg_isready` in db, `nginx -t|-T` in proxy; `curl` GET of
+  exact URLs (`http://127.0.0.1:8088/health`); `cat` of the four `target/runtime/` files (cwd = `target/`);
+  `df`, `free`, `uptime`. Never: shells, docker global flags, `docker exec` flags, curl headers/output
+  files/methods, the GCE metadata server, `target/known-good/`
+- every argument: charset `[A-Za-z0-9._:/=-]` only, no `..` segment, ≤ 512 chars, ≤ 32 args
+- `validator.summary()` renders the allowed commands as text for the diagnoser's prompt, so the
+  prompt can't drift from what the executor accepts
+- the graph's `check_health` sends `curl -fsS --max-time 5 http://127.0.0.1:8088/health` (allowed)
+- run by `executor.CommandRunner.diagnose()` (`src/executor/runner.py`): binary resolved only on
+  `/usr/local/bin:/usr/bin:/bin` (never the inherited `$PATH`), stdin closed, environment reduced to
+  `PATH`, `LANG`/`LC_ALL` and the operator-set `HOME`/`DOCKER_HOST`/`DOCKER_CONFIG`, cwd = `target/`,
+  own process group killed on timeout (`FAILED`, reason `timeout after Ns`), stdout/stderr each capped
+  to the last `MAX_OUTPUT_BYTES` with the partial first line dropped, then secret-looking values
+  masked (`executor.redact`: `*PASSWORD*=`, `user:pass@` in URLs, bearer tokens, `sk-`/`xox?-`/`gh?_`/`ya29.`)
+- rule ids: `argv.*` (empty, charset, path, too_long, arg_too_long), `binary.*` (not_allowed, path),
+  `docker.*` (subcommand, global_flag, flag, flag_value, flag_duplicate, follow, args, container,
+  exec_flag, exec_program), `redis.*`, `pg_isready.*`, `nginx.args`, `curl.*` (flag, flag_value, url),
+  `cat.*`, `df.args`, `free.args`, `uptime.args`
 
-**Remediation (`remediate`) — catalog only, never free-form:** **[proposed list]**
+**Remediation (`remediate`) — catalog only, never free-form:**
 
-| Action | Params | Rollback |
-|---|---|---|
-| `restart_service` | `service` | — |
-| `restore_config` | `service`, `file` (from known-good snapshot) | `restore_config` to previous |
-| `set_env` | `service`, `key`, `value` (key allowlist) | `set_env` previous value |
-| `scale_memory_limit` | `service`, `mb` (bounded range) | previous limit |
-| `rollback_image` | `service`, `tag` (from a pinned list) | previous tag |
-| `prune_path` | `path` (under an allowlisted dir) | — |
+The action **names** are code in `src/contracts/catalog.py` (`REMEDIATION_ACTIONS`); the fault
+catalog and the approval token both refer to them. Each action's params and behaviour belong to the
+executor. `restore_config` copies a file from `target/known-good/` into `target/runtime/` with `cp`
+(same inode, so a bind-mounted file updates inside the container), then restarts or reloads the service.
 
-Each action validates its own params with a Pydantic model; anything else → `rejected`.
+Implemented in `src/executor/remediation.py` (`Remediator.remediate`); what is enabled and what each
+action may touch is in `src/executor/remediation.yaml`. All params are strings.
+
+| Action | Params (this target) | What the executor does | Enabled |
+|---|---|---|---|
+| `restart_service` | `service` ∈ proxy, api, db, cache | `docker compose restart <service>` | yes |
+| `restore_config` | `service` + its `file`: proxy `nginx.conf`, api `api.env`, cache `redis.conf` | copy known-good → runtime (same inode), then proxy: `nginx -s reload`; api: recreate; cache: restart | yes |
+| `scale_memory_limit` | `service`, `mb` (proxy 32–256, api/db 128–1024, cache 64–512) | set `<SVC>_MEM_LIMIT=<mb>m` in runtime/stack.env, `up -d --no-deps` | yes |
+| `rollback_image` | `service` = api, `tag` = good | set `API_IMAGE_TAG`, `up -d --no-deps api` | yes |
+| `set_env` | — | refused (`remediate.action_disabled`): the agent only sees redacted values, so it can't write a correct secret-bearing value; `restore_config` undoes env drift | no |
+| `prune_path` | — | refused (`remediate.action_disabled`): no fault needs it; deleting is the riskiest action | no |
+
+Gates, in order (each refusal changes nothing): `idempotency_key == action_id`
+(`remediate.idempotency_key`) → action known (`remediate.unknown_action`) and enabled
+(`remediate.action_disabled`) → approval token verified with `Settings.approval_key_bytes()`
+(`rule_id: null`, reason `approval_invalid|approval_expired|approval_malformed`) → params valid
+(`remediate.params`; **a valid approval does not bypass policy**) → not already run.
+
+Idempotency: a sqlite store keyed by `idempotency_key`. A retry of a finished request returns the
+stored outcome without running again; a key reused for a different request is refused
+(`remediate.idempotency_conflict`); an attempt interrupted mid-way is **not** re-run (`FAILED`,
+`remediate.interrupted`) and needs a new proposal. One remediation runs at a time.
+
+Steps are built by the executor's code from validated params, never supplied by the LLM, and run
+through the same `CommandRunner` path as diagnostics (fixed PATH, no shell, timeout, output cap,
+redaction). Result: `COMPLETED` with every step listed in `stdout` and the last step's exit code;
+`FAILED` (`remediate.step`) if a step couldn't run.
 
 ---
 
@@ -278,7 +343,7 @@ signed bytes can't drift.
   it can't be extended.
 - `APPROVAL_SIGNING_KEY` is **hex text**; both sides turn it into bytes only with
   `Settings.approval_key_bytes()` (`bytes.fromhex`, whitespace stripped). It must decode to at least
-  32 bytes (64 hex chars; `python -c "import secrets; print(secrets.token_hex(32))"`); the helper and
+  32 bytes (64 hex chars; `uv run python -c "import secrets; print(secrets.token_hex(32))"`); the helper and
   `mint` both refuse shorter keys. Never `.encode()` the env value directly.
 - `verify` raises `ApprovalTokenError` with reason `approval_malformed`, `approval_invalid` or
   `approval_expired`; the executor puts that reason in `RejectionInfo.reason`. The signature is
@@ -332,4 +397,6 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 | `APPROVAL_TTL_S`, `MAX_ITERATIONS`, `MAX_REPLANS`, `MAX_TOOL_CALLS`, `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S` | diagnoser | |
 | `MEMORY_ENABLED`, `MAX_HYPOTHESES` | diagnoser | ablation switches |
 | `ALLOWED_DIAGNOSER_SA`, `MAX_OUTPUT_BYTES` | executor | |
+| `EXECUTOR_AUDIENCE`, `EXECUTOR_STATE_PATH` | executor | ID-token audience (empty → `EXECUTOR_URL`); sqlite idempotency store on a persistent disk |
+| `EXECUTOR_DEV_TOKEN` | executor | local dev only, ≥ 32 chars, refused unless bound to 127.0.0.1; never set on the VM |
 | `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | both | |
