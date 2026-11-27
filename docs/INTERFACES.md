@@ -314,7 +314,7 @@ signed bytes can't drift.
   it can't be extended.
 - `APPROVAL_SIGNING_KEY` is **hex text**; both sides turn it into bytes only with
   `Settings.approval_key_bytes()` (`bytes.fromhex`, whitespace stripped). It must decode to at least
-  32 bytes (64 hex chars; `python -c "import secrets; print(secrets.token_hex(32))"`); the helper and
+  32 bytes (64 hex chars; `uv run python -c "import secrets; print(secrets.token_hex(32))"`); the helper and
   `mint` both refuse shorter keys. Never `.encode()` the env value directly.
 - `verify` raises `ApprovalTokenError` with reason `approval_malformed`, `approval_invalid` or
   `approval_expired`; the executor puts that reason in `RejectionInfo.reason`. The signature is

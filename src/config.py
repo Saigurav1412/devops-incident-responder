@@ -79,7 +79,7 @@ class Settings(BaseSettings):
         sides, makes that impossible.
 
         Format: hex, at least 32 bytes after decoding (64 hex characters). Generate one with
-            python -c "import secrets; print(secrets.token_hex(32))"
+            uv run python -c "import secrets; print(secrets.token_hex(32))"
         Surrounding whitespace is ignored (a trailing newline from Secret Manager or a copy-paste
         must not change the key).
 
@@ -98,7 +98,7 @@ class Settings(BaseSettings):
             # so nothing about the secret reaches logs.
             raise ValueError(
                 "APPROVAL_SIGNING_KEY must be hex; generate one with "
-                '`python -c "import secrets; print(secrets.token_hex(32))"`'
+                '`uv run python -c "import secrets; print(secrets.token_hex(32))"`'
             ) from None
         if len(key) < MIN_KEY_BYTES:
             raise ValueError(

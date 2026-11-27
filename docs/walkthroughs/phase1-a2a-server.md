@@ -102,11 +102,14 @@ matches what the executor enforces. `test_agent_card_shape` pins that.
 ```bash
 cd ~/CSCI-599/Capstone_Project
 git fetch origin && git switch feat/executor-a2a-server && uv sync
-export APPROVAL_SIGNING_KEY=$(python -c "import secrets;print(secrets.token_hex(32))")
-export EXECUTOR_DEV_TOKEN=$(python -c "import secrets;print(secrets.token_hex(24))")
+# `uv run python`, not `python`: WSL/Ubuntu has no bare `python` command, and an empty key
+# makes the executor refuse to start ("APPROVAL_SIGNING_KEY is not set"), which is by design.
+export APPROVAL_SIGNING_KEY=$(uv run python -c "import secrets;print(secrets.token_hex(32))")
+export EXECUTOR_DEV_TOKEN=$(uv run python -c "import secrets;print(secrets.token_hex(24))")
 export EXECUTOR_URL=http://127.0.0.1:8080
 uv run python -m executor --port 8080 &
-curl -s -H "Authorization: Bearer $EXECUTOR_DEV_TOKEN" localhost:8080/.well-known/agent-card.json | python -m json.tool | less
+sleep 3
+curl -s -H "Authorization: Bearer $EXECUTOR_DEV_TOKEN" localhost:8080/.well-known/agent-card.json | uv run python -m json.tool
 kill %1
 ```
 
