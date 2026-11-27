@@ -100,6 +100,23 @@ rather than store a `verified` record for a fix that didn't run.
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
 and a Slack notice.
 
+### 1.1 Diagnoser HTTP API **[proposed]** — owner: Sai; callers: monitor, eval harness (Om)
+
+Implemented in `src/diagnoser/service.py` (`create_service(deps, poster)`). One Cloud Run service.
+
+| Endpoint | Auth | Request | Response |
+|---|---|---|---|
+| `POST /incidents` | `Authorization: Bearer <INCIDENT_API_TOKEN>` | an `Alert` (§4.1) as JSON; unknown fields, naive datetimes, `summary` > 500 chars → 422 | `202 {"incident_id", "status_url"}`; the graph runs in the background |
+| `GET /incidents/{incident_id}` | same bearer token | — | `200 {"incident_id", "outcome", "waiting_for_approval", "hypotheses": [{id, statement, status}], "proposed": {action, params} \| null, "budget": {iterations, replans, tool_calls, tokens}}`; unknown id → 404 |
+| `POST /slack/interactions` | Slack signature (§4.2) | Slack's form-encoded `payload` | empty 200 (or 401 / 413) |
+| `GET /healthz` | none | — | `{"status": "ok"}` |
+
+- Wrong or missing token → 401; `INCIDENT_API_TOKEN` unset → 503 `incident_api_token_not_configured` (fails closed).
+- Every alert starts a new incident with a fresh uuid `incident_id` (no de-duplication by `alert_id` yet).
+- Status never includes `observations` (raw, untrusted command output) or any token.
+- Callers poll `GET /incidents/{id}` until `outcome != "open"`. Whenever the graph pauses for approval,
+  including a second time after a failed health check, the service posts the approval message to Slack.
+
 ---
 
 ## 2. A2A: diagnoser ↔ executor **[proposed]** — owner: Om (server), Sai (client)
@@ -212,6 +229,29 @@ refused to run this", which is what the eval counts as a blocked unsafe action.
 
 `stdout`/`stderr` are capped (`MAX_OUTPUT_BYTES`, default 16 KB, tail kept). The diagnoser must treat
 them as untrusted data (they are an injection surface: log lines are attacker-controlled).
+
+**Client side, implemented in `src/diagnoser/a2a_client.py` (`A2AExecutorClient`)**, how it reads your answers:
+- Fetches the Agent Card once from `EXECUTOR_URL`, then one non-streaming `SendMessage` per request
+  (timeout: `timeout_s + 10` for diagnose, 300 s for remediate). `A2A-Version: 1.0` is added by the SDK;
+  `Authorization: Bearer <token>` comes from an injected token provider, asked on every request.
+- Exactly one `Task` must come back. `COMPLETED` needs **exactly one** artifact named `command_result`
+  with **exactly one** data part that validates as `CommandResult`. `REJECTED`/`FAILED` read
+  `RejectionInfo`/`FailureInfo` from `status.message`; if that part is missing or malformed the state is
+  kept and the reason becomes `rejected_without_reason` / `failed_without_reason`.
+- Anything else raises `ExecutorClientError` (the graph records a `failed` observation with reason
+  `executor_error: …`): transport errors and JSON-RPC errors (`a2a_call_failed: <type>`), a missing,
+  duplicated or off-contract `command_result`, a bare `Message` instead of a `Task`, a non-terminal or
+  unexpected state (e.g. `WORKING`, `INPUT_REQUIRED`), or a task whose `context_id` isn't the incident_id.
+- The client also tail-caps stdout/stderr to `MAX_OUTPUT_BYTES` itself (defense in depth).
+
+**a2a-sdk 1.3.1 server behaviour seen while testing the client** (relevant to the executor server):
+- The `AgentExecutor` must enqueue a `Task` (e.g. `a2a.helpers.proto_helpers.new_task(..., SUBMITTED)`)
+  before any `TaskUpdater` status update, or the request fails with "Agent should enqueue Task before
+  TaskStatusUpdateEvent event".
+- An uncaught exception in `execute()` does **not** become a `FAILED` task for a non-streaming
+  `SendMessage` (despite the SDK docstring): the caller gets JSON-RPC `InternalError` (-32603) **with
+  the exception's message in it**. So catch exceptions in the executor and answer `FAILED` with a
+  short reason; otherwise exception text (paths, values) leaks to the caller.
 
 ### 2.4 Rules the executor enforces
 
@@ -442,6 +482,7 @@ Output: `evals/results/<date>/<run_id>/{episodes.jsonl, invalid.jsonl, summary.j
 | `EMBEDDING_MODEL` | diagnoser | |
 | `EXECUTOR_URL` | diagnoser | internal IP / DNS of the VM |
 | `HEALTH_URL` | diagnoser | what `check_health` curls, as seen from the VM; default `http://127.0.0.1:8088/health`; must match the executor's curl allowlist |
+| `INCIDENT_API_TOKEN` | diagnoser; monitor + eval harness send it | bearer token for `/incidents` (§1.1); Secret Manager in cloud; unset = intake refuses all |
 | `GCP_PROJECT`, `FIRESTORE_DATABASE` | diagnoser | |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_CHANNEL_ID` | diagnoser | |
 | `APPROVER_ALLOWLIST` | diagnoser | comma-separated Slack user ids |

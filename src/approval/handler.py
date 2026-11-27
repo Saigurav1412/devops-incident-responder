@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -120,10 +121,16 @@ class SlackApprovalHandler:
         graph: CompiledStateGraph,
         settings: Settings,
         clock: Any,  # Callable[[], datetime]; Any keeps the tests' FakeClock simple
+        on_pause: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self.graph = graph
         self.settings = settings
         self.clock = clock
+        # Called with the new pause payload when a resume ends in ANOTHER approval pause (the fix
+        # failed its health check, the graph replanned and proposed a new fix). Without it the
+        # incident would wait for an approval nobody was asked for. The service passes a
+        # function that posts the new approval message to Slack.
+        self.on_pause = on_pause
         # Serialises check-then-resume, so two approvers clicking at the same moment can't both
         # pass check 4 and resume the same incident twice. NOTE: only within one process; with
         # several Cloud Run instances this needs a Firestore transaction (not built yet).
@@ -169,6 +176,9 @@ class SlackApprovalHandler:
             final = await self.graph.ainvoke(
                 resume_with(decision), thread_config(click.incident_id)
             )
+        # Outside the lock: posting to Slack is slow and doesn't touch the graph.
+        if "__interrupt__" in final and self.on_pause is not None:
+            await self.on_pause(final["__interrupt__"][0].value)
         return InteractionResult("resumed", decision.decision, outcome=final.get("outcome"))
 
     async def _pending_proposal(self, click: ApprovalClick) -> tuple[ProposedAction | None, str]:

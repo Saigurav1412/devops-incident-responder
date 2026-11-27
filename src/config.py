@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # so this is the proxy as seen from there. Must be one of the executor allowlist's exact
     # curl URLs (src/security/allowlist.yaml), or every health check comes back REJECTED.
     health_url: str = "http://127.0.0.1:8088/health"
+    # Bearer token callers of POST /incidents must send (the monitor, the eval harness).
+    # The diagnoser service has to be publicly reachable for Slack's webhook, so incident intake
+    # needs its own check. Unset = intake refuses everything (fails closed).
+    incident_api_token: SecretStr | None = None
 
     # --- Slack approval ---
     slack_bot_token: SecretStr | None = None

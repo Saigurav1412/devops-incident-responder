@@ -408,7 +408,7 @@ def test_unreachable_executor_is_recorded_not_raised():
     assert done["outcome"] == "budget_exceeded"
     failed = done["observations"][0]
     assert failed.state == "failed"
-    assert failed.result.reason.startswith("executor_unreachable")
+    assert failed.result.reason.startswith("executor_error")
 
 
 def test_rejected_diagnostic_is_evidence_not_a_crash():
