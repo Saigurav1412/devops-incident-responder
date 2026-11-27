@@ -60,7 +60,7 @@ Thanksgiving is Thu Nov 26. Plan for 2.5 working days, not 4.
 
 **Om**
 - [ ] Fault catalog to 20 (spread across categories in INTERFACES §5)
-- [ ] `evals/harness.py`: reset → inject → run → oracle → record JSONL; scripted approver
+- [x] `evals/harness.py`: reset → inject (self-confirmed) → run → oracle → record JSONL; scripted approver; noop + scripted baselines (live run pending Om's WSL run)
 - [ ] Ablation switches wired: `MEMORY_ENABLED`, `MAX_HYPOTHESES`
 - [ ] First full 20 × 1 run; triage failures with Sai
 

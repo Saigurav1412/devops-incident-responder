@@ -6,3 +6,8 @@ docker image inspect ir-target-api:broken >/dev/null 2>&1 || { log "ir-target-ap
 log "inject api-bad-image-01: API_IMAGE_TAG good -> broken"
 set_kv "$RUNTIME/stack.env" API_IMAGE_TAG broken
 tc up -d --no-deps api >/dev/null
+
+api_runs_broken_image() {
+  [ "$(docker inspect -f '{{.Config.Image}}' "$(service_container api)")" = "ir-target-api:broken" ]
+}
+confirm 20 "api container uses ir-target-api:broken" api_runs_broken_image

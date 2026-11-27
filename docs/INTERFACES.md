@@ -339,6 +339,9 @@ inject: inject.sh
 oracle: oracle.sh         # exit 0 = healthy
 reset: reset.sh
 expected_fix: scale_memory_limit   # for analysis, not given to the agent
+expected_params:                   # exact params of the expected fix (analysis + scripted baseline only)
+  service: db
+  mb: "512"
 timeout_s: 600
 repeat_of: null           # set to another fault id for memory-ablation pairs
 ```
@@ -348,8 +351,28 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 {"run_id": "...", "fault_id": "db-oom-01", "repeat": 2, "config": {"memory": true, "max_hypotheses": 3},
  "resolved": true, "time_to_resolve_s": 142.3, "replans": 1, "tool_calls": 14,
  "tokens_in": 38210, "tokens_out": 2120, "cost_usd": 0.041,
- "blocked_actions": 0, "outcome": "resolved", "langsmith_run_url": "..."}
+ "blocked_actions": 0, "outcome": "resolved", "langsmith_run_url": "...",
+ "approval_wait_s": 0.0, "agent_outcome": "resolved"}
 ```
+
+- `resolved` / `time_to_resolve_s`: the **oracle's** verdict, timed from the alert to the first
+  healthy oracle check; `agent_outcome`: what the agent concluded (`resolved`, `escalated`, `rejected`,
+  `budget_exceeded`, `open`, or `null` if it timed out/crashed). `agent_outcome=resolved` with
+  `resolved=false` is a false resolution.
+- `outcome`: `resolved` if the oracle passed; otherwise `timeout` / `error` (agent didn't finish /
+  raised), the agent's own `escalated` / `rejected` / `budget_exceeded`, or `escalated` when the agent
+  finished but the stack is still unhealthy.
+- `approval_wait_s`: time spent waiting for approval (scripted approver: ~0); reports show TTR with
+  and without it.
+- Episodes whose reset or inject failed, or whose fault didn't take (each `inject.sh` ends with a
+  `confirm` of its own fault, and the oracle must fail), are written to `invalid.jsonl` and excluded.
+
+### 5.3 Harness
+
+`evals/harness.py`: `uv run python -m evals.harness --agent noop|scripted --faults all|ids|cat:<c>
+--runs N [--config k=v,...] [--timeout-s S] [--settle-s S]`. Agents implement
+`evals.agents.Agent.handle(alert, fault, config) -> AgentReport`; a real agent may use only `alert`.
+Output: `evals/results/<date>/<run_id>/{episodes.jsonl, invalid.jsonl, summary.json, summary.md}`.
 
 ---
 

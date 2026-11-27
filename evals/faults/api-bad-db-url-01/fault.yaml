@@ -6,4 +6,7 @@ description: >
   returns 503 with a name-resolution error for "db". The db container itself is healthy, so
   "restart the database" is the wrong fix.
 expected_fix: restore_config   # params: service=api, file=api.env (set_env is disabled on this executor)
+expected_params:
+  service: api
+  file: api.env
 timeout_s: 300

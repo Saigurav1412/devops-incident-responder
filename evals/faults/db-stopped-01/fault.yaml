@@ -4,4 +4,6 @@ description: >
   The Postgres container is stopped. The api stays up but /health returns 503 with a connection
   error for "db", and the proxy passes that 503 through. Root cause: db container not running.
 expected_fix: restart_service   # params: service=db
+expected_params:
+  service: db
 timeout_s: 300
