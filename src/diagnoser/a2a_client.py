@@ -35,8 +35,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import httpx
-from a2a.client import Client, ClientCallContext, ClientConfig, ClientFactory
-from a2a.types import Message, Role, SendMessageRequest, Task, TaskState
+from a2a.client import A2ACardResolver, Client, ClientCallContext, ClientConfig, ClientFactory
+from a2a.types import AgentCard, Message, Role, SendMessageRequest, Task, TaskState
 from a2a.utils.errors import A2AError
 
 from contracts import (
@@ -48,7 +48,7 @@ from contracts import (
     RemediateRequest,
 )
 from contracts.a2a_codec import from_data_part, to_data_part
-from diagnoser.ports import ExecutorClientError
+from diagnoser.ports import ExecutorClientError, PolicySummaries
 from obs.logging import get_logger
 
 log = get_logger(__name__)
@@ -191,6 +191,7 @@ class A2AExecutorClient:
         self._remediate_timeout_s = remediate_timeout_s
         self._max_output_bytes = max_output_bytes
         self._client: Client | None = None
+        self._card: AgentCard | None = None
         # Two concurrent first calls shouldn't both fetch the Agent Card.
         self._client_lock = asyncio.Lock()
 
@@ -198,15 +199,38 @@ class A2AExecutorClient:
         """Fetch the Agent Card once and build the SDK client from it (JSON-RPC, no streaming)."""
         async with self._client_lock:
             if self._client is None:
-                config = ClientConfig(httpx_client=self._http, streaming=False)
+                # The factory must exist BEFORE the card fetch: its constructor adds the
+                # A2A-Version header to our shared httpx client, and the card GET needs it too.
+                factory = ClientFactory(ClientConfig(httpx_client=self._http, streaming=False))
                 try:
-                    self._client = await ClientFactory(config).create_from_url(self._base_url)
+                    # Resolve the card ourselves (what create_from_url does inside) so we keep it:
+                    # its skill descriptions are the executor's policy summaries.
+                    card = await A2ACardResolver(self._http, self._base_url).get_agent_card()
+                    self._client = factory.create(card)
+                    self._card = card
                 except (A2AError, httpx.HTTPError, ValueError) as exc:
                     # ValueError: the card offers no transport we speak (e.g. no JSONRPC).
                     raise ExecutorClientError(
                         f"agent_card_unavailable: {type(exc).__name__}"
                     ) from None
             return self._client
+
+    async def policy_summaries(self) -> PolicySummaries:
+        """The executor's policy as prompt text: the `diagnose` and `remediate` skill descriptions
+        of its Agent Card (Om's PR #12 renders them from the config it enforces).
+
+        Same card as the one the client was built from (fetched once). Raises ExecutorClientError
+        if the card can't be fetched or lacks either skill: a prompt without the policy would
+        invite commands and fixes the executor refuses.
+        """
+        await self._a2a_client()
+        if self._card is None:  # can't happen: set together with self._client
+            raise ExecutorClientError("agent_card_unavailable: no card")
+        skills = {s.id: s.description for s in self._card.skills}
+        missing = [s for s in ("diagnose", "remediate") if not skills.get(s, "").strip()]
+        if missing:
+            raise ExecutorClientError(f"agent_card_missing_skills: {','.join(missing)}")
+        return PolicySummaries(diagnose=skills["diagnose"], remediate=skills["remediate"])
 
     async def diagnose(self, request: DiagnoseRequest) -> Observation:
         # A little longer than the command's own timeout, so the executor's FAILED("timeout")

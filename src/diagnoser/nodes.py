@@ -34,7 +34,7 @@ from contracts import (
     RemediateRequest,
 )
 from diagnoser.budget import budget_exceeded_reason
-from diagnoser.ports import DiagnoserDeps, ExecutorClientError
+from diagnoser.ports import DiagnoserDeps, ExecutorClientError, ReasonerError
 from obs.logging import get_logger
 
 log = get_logger(__name__)
@@ -300,8 +300,16 @@ class DiagnoserNodes:
         }
 
     async def propose_fix(self, state: IncidentState) -> dict[str, Any]:
-        """Turn the reasoner's suggestion into a ProposedAction with a code-generated action_id."""
-        answer = await self.deps.reasoner.propose(state)
+        """Turn the reasoner's suggestion into a ProposedAction with a code-generated action_id.
+
+        If the reasoner can't produce a valid proposal (LLM down, or invalid output twice), there
+        is no safe default fix: `proposed` stays None and route_after_propose escalates.
+        """
+        try:
+            answer = await self.deps.reasoner.propose(state)
+        except ReasonerError as exc:
+            self._log(state, "no fix proposal, escalating", error=str(exc))
+            return {"proposed": None, "budget": self._add_budget(state, tokens=exc.tokens)}
         proposal = answer.value
         proposed = ProposedAction(
             action_id=str(uuid.uuid4()),
@@ -519,6 +527,10 @@ class DiagnoserNodes:
         if all(h.status == "refuted" for h in hypotheses):
             return self._replan_or_escalate(state)
         return self._guarded(state, NODE_DIAGNOSE)
+
+    def route_after_propose(self, state: IncidentState) -> str:
+        # No proposal = the reasoner failed (see propose_fix): a human takes over.
+        return NODE_APPROVAL if state["proposed"] is not None else NODE_ESCALATE
 
     def route_after_approval(self, state: IncidentState) -> Literal["execute_fix", "rejected"]:
         # No budget check here on purpose: waiting for a human counts toward wall-clock time,

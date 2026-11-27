@@ -29,7 +29,7 @@ Newest at the bottom. Move an item from **Open** to **Decided** when both agree.
 |---|---|---|
 | Remediation: typed action catalog vs. free-form commands behind an allowlist | catalog (safer, easier to verify) / free-form (stronger "terminal control" story) | catalog for remediation, free-form-but-validated argv for diagnostics |
 | Firestore checkpointer | custom `BaseCheckpointSaver` / community package | try community package, fall back to custom |
-| LLM | own OpenAI key / ChatGPT Edu OAuth (no API key) / Gemini free tier | confirm on Piazza whether A3's "no NIM" guidance still applies |
+| LLM | own OpenAI key / ChatGPT Edu OAuth (no API key) / Gemini free tier | confirm on Piazza whether A3's "no NIM" guidance still applies. Since 2026-11-26 (Sai) the reasoner, prompts and output validation are provider-independent (`diagnoser/llm.py` `ChatModel`); only a thin adapter waits on this. Strict structured-output support (JSON schema) is a plus but not required: the reasoner validates every reply itself |
 | Target stack contents | app + Postgres + Redis + nginx / something smaller | smallest stack that supports 20 distinct faults |
 | GCP credits | current coupon / request extra | estimate VM hours first; stop the VM when idle |
 | Escalating approvals that expire with no click (INTERFACES §4.2 → `outcome="escalated"`) (Sai, 2026-11-26) | Cloud Scheduler job that resumes expired incidents / in-process sweeper task / check on the next alert | Cloud Scheduler (survives instance restarts; Cloud Run may scale to zero, killing an in-process timer). Today the TTL is enforced only at click time via `requested_at`. Blocked on GCP being back on |

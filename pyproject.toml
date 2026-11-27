@@ -54,6 +54,7 @@ packages = [
     "src/memory",
     "src/approval",
     "src/obs",
+    "src/prompts",  # prompt .md files ship inside the package (prompts.load uses importlib.resources)
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
