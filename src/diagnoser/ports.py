@@ -66,6 +66,36 @@ class FixProposal:
     rollback: str | None = None
 
 
+class ReasonerError(Exception):
+    """The reasoner couldn't produce a usable answer (LLM unreachable, or output that stayed
+    invalid after a repair attempt) for a step that has no safe default.
+
+    Only `propose` raises it: plan / next_command / assess have safe defaults (empty plan ->
+    escalate, no command, no status change). `tokens` carries what the failed attempts cost, so
+    the budget still counts them.
+    """
+
+    def __init__(self, message: str, tokens: int = 0) -> None:
+        super().__init__(message)
+        self.tokens = tokens
+
+
+@dataclass(frozen=True)
+class PolicySummaries:
+    """The executor's policy in prompt-ready text, from its Agent Card skill descriptions
+    (`diagnose`, `remediate`). Written by the executor from the config it enforces, so the prompt
+    can't promise a command or fix the executor would refuse (Om's PR #12)."""
+
+    diagnose: str
+    remediate: str
+
+
+class PolicySource(Protocol):
+    """Where the reasoner gets PolicySummaries. A2AExecutorClient implements it from the card."""
+
+    async def policy_summaries(self) -> PolicySummaries: ...
+
+
 class Reasoner(Protocol):
     """Everything the graph asks the LLM. Each method sees the whole IncidentState.
 

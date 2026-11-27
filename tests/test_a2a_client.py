@@ -322,3 +322,43 @@ def test_incident_runs_through_the_graph_over_a2a():
     assert kinds == ["DiagnoseRequest", "RemediateRequest", "DiagnoseRequest"]  # logs, fix, health
     assert {ctx for _, ctx in stub.received} == {"inc-9"}
     assert [o.state for o in done["observations"]] == ["completed"] * 3
+
+
+# ---------------------------------------------------------------------------------------------
+# Policy summaries from the Agent Card (for the LLM reasoner's prompt)
+# ---------------------------------------------------------------------------------------------
+
+
+def test_policy_summaries_come_from_the_card_skills_and_share_its_fetch():
+    stub = StubExecutor(completes_with(OK))
+    app, seen = build_app(stub)
+
+    async def go():
+        client = A2AExecutorClient(URL, http_client=http_client_for(app), clock=lambda: T0)
+        try:
+            policy = await client.policy_summaries()
+            await client.diagnose(DIAG)
+            return policy
+        finally:
+            await client.aclose()
+
+    policy = asyncio.run(go())
+    assert (policy.diagnose, policy.remediate) == ("read-only", "catalog")
+    assert [h["_method"] for h in seen] == ["GET", "POST"]  # one card fetch for both uses
+
+
+def test_card_without_a_policy_skill_is_refused():
+    card = agent_card()
+    del card.skills[1]  # drop "remediate"
+    stub = StubExecutor(completes_with(OK))
+    app, _ = build_app(stub, card)
+
+    async def go():
+        client = A2AExecutorClient(URL, http_client=http_client_for(app), clock=lambda: T0)
+        try:
+            return await client.policy_summaries()
+        finally:
+            await client.aclose()
+
+    with pytest.raises(ExecutorClientError, match="agent_card_missing_skills: remediate"):
+        asyncio.run(go())

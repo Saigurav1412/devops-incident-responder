@@ -67,6 +67,7 @@ class IncidentState(TypedDict):
 `verify_hypothesis --confirmed--> propose_fix → request_approval (interrupt) → execute_fix → check_health`
 `check_health --fail--> plan_hypotheses` · `check_health --pass--> save_memory → END`
 `execute_fix --fix not applied--> escalate` (remediate task not `completed` with `exit_code == 0`)
+`propose_fix --no valid proposal--> escalate` (the reasoner raised `ReasonerError`)
 `verify_hypothesis --still open--> diagnose` (gather more evidence; bounded by the caps below)
 `request_approval --reject--> END` (`outcome="rejected"`)
 Out of replans → `escalate → END` (`outcome="escalated"`). Any cap hit → `budget_exceeded → END`.
@@ -101,6 +102,24 @@ allowlist's exact curl URLs.
 exit) the graph escalates without a health check and without refuting the hypothesis, because an
 unapplied fix says nothing about the diagnosis. `save_memory` checks the same thing again and raises
 rather than store a `verified` record for a fix that didn't run.
+
+**Reasoner (LLM), implemented in `src/diagnoser/reasoner.py` (`LLMReasoner`) over a provider-independent
+`ChatModel` (`src/diagnoser/llm.py`); prompts in `src/prompts/` (versioned, hashed):**
+- System message = `diagnoser_common.v1` with the executor's two policy summaries (the `diagnose` and
+  `remediate` skill descriptions of its Agent Card, §2.1) + the role prompt. User message = the incident.
+- Untrusted text (alert summary, memory records, hypothesis statements, observations) reaches the model
+  only JSON-encoded inside `===BEGIN/END UNTRUSTED DATA <nonce>===` blocks, with a fresh random nonce per
+  call. Approval tokens are never rendered. Output tails are capped (2,000 chars per stream); only the
+  last 12 observations show output.
+- Answers must validate against strict schemas (`PlanAnswer`, `CommandAnswer`, `AssessAnswer`,
+  `ProposeAnswer`: unknown fields forbidden, bounded strings, params as `[{name, value}]`). One repair
+  turn, then a safe default: plan `[]` (→ escalate), command `None`, assess `[]` (no change), propose
+  raises `ReasonerError` (→ escalate). Provider errors are not retried by the reasoner. Tokens of every
+  attempt, failed ones included, go to the budget.
+- If the executor's card can't be fetched, no LLM call is made and the same defaults apply.
+- The policy summaries are cached for the diagnoser's process lifetime. **Deploy note:** after an
+  executor redeploy that changes `allowlist.yaml` / `remediation.yaml`, restart the diagnoser too
+  (until then the prompt shows the old policy; the executor still enforces the new one).
 
 **Budget caps (enforced in code, not the prompt):** `MAX_ITERATIONS`, `MAX_TOOL_CALLS`,
 `MAX_TOKENS_PER_INCIDENT`, `MAX_WALL_CLOCK_S`. Hitting any cap ends with `outcome="budget_exceeded"`
@@ -249,6 +268,8 @@ them as untrusted data (they are an injection surface: log lines are attacker-co
   duplicated or off-contract `command_result`, a bare `Message` instead of a `Task`, a non-terminal or
   unexpected state (e.g. `WORKING`, `INPUT_REQUIRED`), or a task whose `context_id` isn't the incident_id.
 - The client also tail-caps stdout/stderr to `MAX_OUTPUT_BYTES` itself (defense in depth).
+- `policy_summaries()` returns the card's `diagnose` and `remediate` skill descriptions (same single card
+  fetch) for the reasoner's prompt; a card without both raises `agent_card_missing_skills: …`.
 
 **a2a-sdk 1.3.1 server behaviour seen while testing the client** (relevant to the executor server):
 - The `AgentExecutor` must enqueue a `Task` (e.g. `a2a.helpers.proto_helpers.new_task(..., SUBMITTED)`)
