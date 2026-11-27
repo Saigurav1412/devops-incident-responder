@@ -19,3 +19,10 @@
 - Went wrong: one check (`snapshot.next == request_approval`) turned out to be redundant, since a mutation removing it failed nothing, so it was removed; the interrupt-kind check had no test until a stub-graph test was added.
 - Found a shared-setup bug: `pyproject.toml` force-includes a copy of `src/config.py` into site-packages that shadows the source outside pytest. Raised with Om; workaround `uv sync --reinstall-package incident-responder`.
 - Not checked against real Slack at all (payload format and signing are from Slack's docs, only self-consistent in tests).
+
+## 2026-11-26 — cross-test against Om's executor server, "refused fix = resolved" bug
+- Re-ran Om's #6 (245 passed) and #12 (267 passed) on macOS; then Claude Code (Opus 5.5) scratch-merged his #12 with my stack and wrote cross-tests: my real `A2AExecutorClient` + graph against his real server app (validator, Remediator, token check real; only process execution faked).
+- That found a bug in my own #7: with a token minted over the wrong params, his server correctly refused the fix, but my graph still ran `check_health`, the (fake) service answered, and the incident ended "resolved" with a verified memory record for a fix that never ran. Unit tests with my own fakes never caught it, because every fake fix "succeeded".
+- Fix (AI-generated, my design choice to escalate rather than replan): `route_after_execute` + `fix_applied()`, and `save_memory` re-checks. Verified by 7 new tests, 5 mutation checks (one survived until I added a test), every stacked branch re-tested, and the cross-test now ends `escalated`.
+- Went wrong: copying the #7 `nodes.py` into a tree based on #11 caused 14 fake failures (the upper branches had changed that file); the right way was commit on #7, merge up, rebuild the scratch merge. Also committed once with git hooks disabled by mistake (the repo has none, so nothing was skipped).
+- Lesson for PROCESS_LOG: integration tests against the other person's real component find things that tests against my own fakes can't.
