@@ -75,6 +75,43 @@ def health_check_argv(health_url: str) -> list[str]:
     return ["curl", "-fsS", "--max-time", str(HEALTH_MAX_TIME_S), health_url]
 
 
+def fix_applied(observation: Observation) -> bool:
+    """Did the executor actually carry out the remediation? Decided by code, never by the LLM.
+
+    Applied = the remediate task COMPLETED and its last step exited 0 (INTERFACES §2.3: a
+    remediation whose step failed is still COMPLETED, with the non-zero exit code).
+    Not applied = REJECTED (policy refused it, e.g. a bad or mismatched approval token, or an
+    action this target doesn't allow), FAILED (timeout, internal error), executor unreachable,
+    or a non-zero exit.
+
+    WHY this matters: check_health only says "the service answers now". Without this check, a
+    refused fix plus a service that recovered by itself would end as "resolved" and save a
+    verified memory record for a fix that never ran (found by running the diagnoser against
+    the real executor server from PR #12 with a token for the wrong params).
+    """
+    return (
+        observation.skill == "remediate"
+        and observation.state == "completed"
+        and isinstance(observation.result, CommandResult)
+        and observation.result.exit_code == 0
+    )
+
+
+def last_remediation(state: IncidentState) -> Observation | None:
+    """The newest remediate observation for the CURRENT proposal, or None if there isn't one.
+
+    Matched on action_id, so an earlier (replanned) fix can't stand in for this one.
+    """
+    proposed = state["proposed"]
+    if proposed is None:
+        return None
+    for observation in reversed(state["observations"]):
+        request = observation.request
+        if isinstance(request, RemediateRequest) and request.action_id == proposed.action_id:
+            return observation
+    return None
+
+
 def apply_assessment(
     current: list[Hypothesis], assessed: list[Hypothesis]
 ) -> tuple[list[Hypothesis], list[str]]:
@@ -402,6 +439,11 @@ class DiagnoserNodes:
         confirmed = [h for h in state["hypotheses"] if h.status == "confirmed"]
         if proposed is None or not confirmed:
             raise RuntimeError("save_memory reached without a confirmed hypothesis and fix")
+        # Second line of defence behind route_after_execute: never record a fix as verified
+        # unless the executor says it ran. A routing bug must fail loudly, not poison memory.
+        remediation = last_remediation(state)
+        if remediation is None or not fix_applied(remediation):
+            raise RuntimeError("save_memory reached but the executor didn't apply the fix")
         alert = state["alert"]
         record = IncidentRecord(
             incident_id=state["incident_id"],
@@ -416,7 +458,8 @@ class DiagnoserNodes:
         return {"outcome": "resolved"}
 
     async def escalate(self, state: IncidentState) -> dict[str, Any]:
-        """Out of replans: hand the incident to a human. TODO(sai): Slack notice (Phase 1)."""
+        """Hand the incident to a human: out of replans, an empty plan, or an approved fix the
+        executor didn't apply (see route_after_execute). TODO(sai): Slack notice (Phase 1)."""
         self._log(state, "incident escalated", replans=state["budget"].replans)
         return {"outcome": "escalated"}
 
@@ -475,6 +518,26 @@ class DiagnoserNodes:
         if approval is not None and approval.decision == "approve":
             return NODE_EXECUTE
         return ROUTE_REJECTED
+
+    def route_after_execute(self, state: IncidentState) -> str:
+        """Only check health if the fix actually ran; otherwise escalate.
+
+        WHY escalate and not replan: a fix the executor refused or that failed half-way doesn't
+        tell us the hypothesis was wrong, so refuting it (what a failed health check does) would
+        be a false lesson. Replanning would likely propose the same fix again and cost the human
+        another approval click. A refusal after a human approved also means the proposal and the
+        executor's policy disagree, or the system is in an unknown state after a failed step:
+        both need a person. No budget check here: it's a single step to a terminal node.
+        """
+        remediation = last_remediation(state)
+        if remediation is not None and fix_applied(remediation):
+            return NODE_HEALTH
+        self._log(
+            state,
+            "fix not applied, escalating",
+            task_state=remediation.state if remediation else None,
+        )
+        return NODE_ESCALATE
 
     def route_after_health(self, state: IncidentState) -> str:
         if not any(h.status == "confirmed" for h in state["hypotheses"]):
