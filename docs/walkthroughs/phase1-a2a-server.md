@@ -110,7 +110,7 @@ export EXECUTOR_URL=http://127.0.0.1:8080
 uv run python -m executor --port 8080 &
 sleep 3
 curl -s -H "Authorization: Bearer $EXECUTOR_DEV_TOKEN" localhost:8080/.well-known/agent-card.json | uv run python -m json.tool
-kill %1
+kill %1; wait %1 2>/dev/null   # wait for shutdown so its log lines don't land after the prompt
 ```
 
 Read the two skill descriptions in the card: that's exactly what Sai's prompt will be built from.
