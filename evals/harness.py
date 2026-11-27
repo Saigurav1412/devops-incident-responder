@@ -273,14 +273,47 @@ def build_agent(name: str) -> Agent:
         return ScriptedAgent(
             runner, Remediator(runner, key, IdempotencyStore()), ScriptedApprover(key)
         )
+    if name == "diagnoser-scripted":
+        # The real diagnoser service + graph + Slack approval path + A2A client, talking to the
+        # executor server you started (walkthrough phase2-diagnoser-agent.md). Only the
+        # reasoner is scripted (it reads the fault's answer), so this is the pipeline's upper
+        # bound. `diagnoser` (LLM reasoner) is added once PR #14 and the provider adapter land.
+        import os
+
+        from config import get_settings
+        from diagnoser.a2a_client import A2AExecutorClient
+        from evals.diagnoser_agent import DiagnoserAgent, FaultScriptedReasoner, harness_settings
+
+        dev_token = os.environ.get("EXECUTOR_DEV_TOKEN", "")
+        if len(dev_token) < 32:
+            raise ValueError(
+                "diagnoser-scripted needs EXECUTOR_DEV_TOKEN (the same value the local executor "
+                "was started with, at least 32 characters)"
+            )
+        settings = harness_settings(get_settings())  # raises if APPROVAL_SIGNING_KEY is unusable
+
+        async def bearer() -> str:
+            return dev_token
+
+        return DiagnoserAgent(
+            name=name,
+            settings=settings,
+            executor=A2AExecutorClient(
+                settings.executor_url,
+                token_provider=bearer,
+                max_output_bytes=settings.max_output_bytes,
+            ),
+            reasoner_factory=FaultScriptedReasoner,
+        )
     raise ValueError(
-        f"unknown agent {name!r}; available: noop, scripted (diagnoser: after the stacks merge)"
+        f"unknown agent {name!r}; available: noop, scripted, diagnoser-scripted "
+        "(diagnoser: after the LLM adapter lands)"
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m evals.harness", description=__doc__.split("\n")[0])
-    p.add_argument("--agent", default="scripted", help="noop | scripted")
+    p.add_argument("--agent", default="scripted", help="noop | scripted | diagnoser-scripted")
     p.add_argument("--faults", default="all", help='"all", ids "a,b", or "cat:config"')
     p.add_argument("--runs", type=int, default=1)
     p.add_argument(
