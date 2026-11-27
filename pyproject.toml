@@ -58,6 +58,7 @@ packages = [
     "src/memory",
     "src/approval",
     "src/obs",
+    "src/prompts",  # prompt .md files ship inside the package (prompts.load uses importlib.resources)
     # A package like the others, so the editable install links it live. It used to be a
     # force-included src/config.py, which hatch COPIES into site-packages even in editable mode:
     # outside pytest every edit was ignored until a reinstall (2026-11-27, PR #16 live run).
