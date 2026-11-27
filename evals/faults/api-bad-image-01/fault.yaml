@@ -1,0 +1,8 @@
+id: api-bad-image-01
+category: deploy
+description: >
+  A bad release: the api is switched to image tag "broken", which exits at startup. Docker
+  restarts it in a loop and the proxy returns 502. The api logs show the startup error, so the
+  fix is to roll back to the previous tag, not to restart the container.
+expected_fix: rollback_image   # params: service=api, tag=good
+timeout_s: 300

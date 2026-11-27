@@ -1,0 +1,63 @@
+# Diagnostic command allowlist: the VALUES the executor's validator allows (INTERFACES §2.4).
+#
+# The *grammar* of each command (which subcommands and flags exist) is in src/security/allowlist.py,
+# because that's where it can be unit-tested. This file holds what changes with the deployment:
+# container names, URLs, files, limits. Anything not listed is refused (default-deny).
+#
+# Editing this file widens or narrows what an LLM-driven agent can run on the VM. Every change
+# needs the other person's review, and tests/test_allowlist.py must still pass.
+
+version: 1
+
+# Compose project of the target (target/docker-compose.yml `name:`). Containers are named
+# <project>-<service>-<n>; the summary uses this to tell the agent which service name to use in
+# remediation params (Sai's review on PR #4: diagnostics take container names, fixes take services).
+compose_project: ir-target
+
+# Containers the agent may look at. Compose names them <project>-<service>-<n>; the project is
+# `ir-target` (target/docker-compose.yml). tests/test_allowlist.py checks this list matches the
+# compose file, so a renamed service can't silently fall out of (or into) the allowlist.
+containers:
+  - ir-target-proxy-1
+  - ir-target-api-1
+  - ir-target-db-1
+  - ir-target-cache-1
+
+docker_logs:
+  max_tail: 1000          # `--tail N` upper bound
+  max_since_hours: 24     # `--since 30m` / `--since 2h` upper bound
+
+# Exact URLs curl may GET. Exact string match: no prefixes, no query strings, nothing else.
+# Notably absent: 169.254.169.254 / metadata.google.internal (the GCE metadata server hands out
+# the VM service account's access token; a prompt-injected agent asking for it is the classic
+# cloud SSRF attack).
+curl:
+  urls:
+    - http://127.0.0.1:8088/health
+  max_time_s: 10
+
+# Files `cat` may read, relative to the target directory (the runner sets cwd there).
+# Only the runtime copies: they show the agent what the system is running now. known-good/ is
+# deliberately NOT readable: diffing against it would hand the agent the answer to every config
+# fault, which no real on-call engineer gets.
+readable_files:
+  - runtime/stack.env
+  - runtime/api.env
+  - runtime/nginx.conf
+  - runtime/redis.conf
+
+# `docker exec <container> <program> ...`: only these programs, in only these containers,
+# each with its own grammar in allowlist.py. No shells (sh, bash), ever.
+exec:
+  ir-target-cache-1:
+    redis-cli:
+      commands: [PING, INFO, DBSIZE, CONFIG GET, MEMORY STATS]
+      info_sections: [server, clients, memory, stats, replication, persistence, keyspace]
+      config_params: [maxmemory, maxmemory-policy, save, appendonly, bind]
+  ir-target-db-1:
+    pg_isready:
+      users: [app]
+      databases: [app]
+  ir-target-proxy-1:
+    nginx:
+      flags: ["-t", "-T"]   # test config / test and print config; never -s (signals)
