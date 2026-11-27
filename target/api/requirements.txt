@@ -1,0 +1,5 @@
+# Target API only (not the agent). Pinned to minor versions so the image is reproducible.
+fastapi==0.115.*
+uvicorn==0.32.*
+psycopg[binary]==3.2.*
+redis==5.2.*

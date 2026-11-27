@@ -24,3 +24,6 @@ Thumbs.db
 # eval scratch (dated results ARE committed)
 evals/tmp/
 .remember/
+
+# target stack working copy (recreated by target/reset.sh)
+target/runtime/

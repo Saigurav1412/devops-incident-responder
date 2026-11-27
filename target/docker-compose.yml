@@ -1,0 +1,85 @@
+# ---------------------------------------------------------------------------------------------
+# Target stack: the small system the incident responder diagnoses and repairs.
+#
+# WHAT: proxy (nginx) -> api (Python/FastAPI) -> db (Postgres) + cache (Redis).
+#       Request path for the health check: 127.0.0.1:PROXY_PORT -> nginx -> api:8000/health,
+#       which checks Postgres (SELECT 1) and Redis (a real SET, not just PING).
+#
+# WHY this shape: it is the smallest stack where faults in different places produce *similar*
+#       symptoms (a 502 or 503 at the proxy), so the agent has to diagnose instead of pattern-match.
+#       Four services give room for ~20 distinct faults across the five categories in
+#       docs/INTERFACES.md §5.1 (resource, config, dependency, network, deploy).
+#
+# HOW faults work: every value a fault might break lives in target/runtime/ (gitignored):
+#       stack.env (image tag, memory limits, port), api.env, nginx.conf, redis.conf.
+#       target/reset.sh copies target/known-good/ over target/runtime/ and recreates the stack.
+#       A fault's inject.sh edits a runtime file and applies it. The executor's `restore_config`
+#       action copies the known-good file back, so "known-good" is also the remediation source.
+#
+# Always run through target/lib.sh's `tc` helper (or target/up.sh), which passes
+# `-p ir-target --env-file target/runtime/stack.env`. Plain `docker compose up` won't find the env.
+# ---------------------------------------------------------------------------------------------
+
+name: ir-target
+
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      # Bound to localhost only: the stack is never exposed beyond the VM/laptop.
+      - "127.0.0.1:${PROXY_PORT:-8088}:80"
+    volumes:
+      - ./runtime/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    mem_limit: ${PROXY_MEM_LIMIT:-64m}
+
+  api:
+    # Built by target/up.sh as two tags: `good` and `broken` (deploy faults switch between them).
+    # pull_policy: never, so compose never tries Docker Hub for our local image.
+    image: ir-target-api:${API_IMAGE_TAG:-good}
+    pull_policy: never
+    restart: unless-stopped
+    env_file:
+      - ./runtime/api.env
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    healthcheck:
+      # The slim Python image has no curl; use Python's urllib.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+    mem_limit: ${API_MEM_LIMIT:-256m}
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app-local-only   # local test stack only; never reused anywhere real
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    mem_limit: ${DB_MEM_LIMIT:-256m}
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./runtime/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    mem_limit: ${CACHE_MEM_LIMIT:-128m}

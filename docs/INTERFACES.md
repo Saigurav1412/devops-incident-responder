@@ -171,6 +171,11 @@ them as untrusted data (they are an injection surface: log lines are attacker-co
 
 **Remediation (`remediate`) — catalog only, never free-form:** **[proposed list]**
 
+The action **names** are code in `src/contracts/catalog.py` (`REMEDIATION_ACTIONS`); the fault
+catalog and the approval token both refer to them. Each action's params and behaviour belong to the
+executor. `restore_config` copies a file from `target/known-good/` into `target/runtime/` with `cp`
+(same inode, so a bind-mounted file updates inside the container), then restarts or reloads the service.
+
 | Action | Params | Rollback |
 |---|---|---|
 | `restart_service` | `service` | — |
