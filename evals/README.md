@@ -30,10 +30,11 @@ one you report on, so every number in the report points at its raw data.
 |---|---|---|
 | `noop` | does nothing | **0 resolved.** If not, the oracle or a reset is broken and nothing else is trustworthy |
 | `scripted` | applies each fault's `expected_fix`/`expected_params` (which the real agent never sees) through the real `Remediator`, approved by `ScriptedApprover` | **all resolved.** Upper bound; proves approval → gates → steps → oracle works end to end |
-| diagnoser | Sai's LangGraph agent | the real numbers; adapter lands after both stacks are merged |
+| `diagnoser-scripted` | Sai's whole diagnoser (incident API, graph, Slack approval handler, A2A client) against the executor server; only the reasoner is scripted (reads the fault's answer). Needs the executor running, see `docs/walkthroughs/phase2-diagnoser-agent.md` | **all resolved.** Upper bound through the real pipeline; `replans > 0` here means a pipeline problem (e.g. health-check timing), not the LLM |
+| `diagnoser` | the same with the LLM reasoner | the real numbers; after PR #14 + the provider adapter |
 
 The real agent receives only the `Alert` ("GET /health through the proxy is failing"). It must not
-read `fault`; the adapter for the diagnoser will pass only the alert.
+read `fault`; `DiagnoserAgent` passes `fault` only to the reasoner factory, and the LLM reasoner will ignore it.
 
 ## Episode rules (why the numbers are honest)
 

@@ -124,10 +124,14 @@ async def run_episode(
                 break
             await sleep(timing.poll_s)
 
-        if resolved:
+        # A timeout or crash is never "resolved", even if the stack is healthy by now (e.g. the
+        # fix ran and the agent died afterwards): the agent didn't finish. Found 2026-11-27,
+        # when 15 crashed episodes were recorded as resolved with TTR = the timeout.
+        stack_healthy = resolved
+        if failure is not None:
+            outcome, resolved, ttr = failure, False, None
+        elif resolved:
             outcome = "resolved"
-        elif failure is not None:
-            outcome = failure
         elif report is not None and report.outcome in ("rejected", "budget_exceeded", "escalated"):
             outcome = report.outcome
         else:
@@ -156,7 +160,13 @@ async def run_episode(
         )
         log.info(
             "episode finished",
-            extra={**ctx, "outcome": outcome, "resolved": resolved, "ttr_s": ttr},
+            extra={
+                **ctx,
+                "outcome": outcome,
+                "resolved": resolved,
+                "ttr_s": ttr,
+                "stack_healthy": stack_healthy,
+            },
         )
         return EpisodeResult(record)
     finally:
@@ -273,14 +283,47 @@ def build_agent(name: str) -> Agent:
         return ScriptedAgent(
             runner, Remediator(runner, key, IdempotencyStore()), ScriptedApprover(key)
         )
+    if name == "diagnoser-scripted":
+        # The real diagnoser service + graph + Slack approval path + A2A client, talking to the
+        # executor server you started (walkthrough phase2-diagnoser-agent.md). Only the
+        # reasoner is scripted (it reads the fault's answer), so this is the pipeline's upper
+        # bound. `diagnoser` (LLM reasoner) is added once PR #14 and the provider adapter land.
+        import os
+
+        from config import get_settings
+        from diagnoser.a2a_client import A2AExecutorClient
+        from evals.diagnoser_agent import DiagnoserAgent, FaultScriptedReasoner, harness_settings
+
+        dev_token = os.environ.get("EXECUTOR_DEV_TOKEN", "")
+        if len(dev_token) < 32:
+            raise ValueError(
+                "diagnoser-scripted needs EXECUTOR_DEV_TOKEN (the same value the local executor "
+                "was started with, at least 32 characters)"
+            )
+        settings = harness_settings(get_settings())  # raises if APPROVAL_SIGNING_KEY is unusable
+
+        async def bearer() -> str:
+            return dev_token
+
+        return DiagnoserAgent(
+            name=name,
+            settings=settings,
+            executor=A2AExecutorClient(
+                settings.executor_url,
+                token_provider=bearer,
+                max_output_bytes=settings.max_output_bytes,
+            ),
+            reasoner_factory=FaultScriptedReasoner,
+        )
     raise ValueError(
-        f"unknown agent {name!r}; available: noop, scripted (diagnoser: after the stacks merge)"
+        f"unknown agent {name!r}; available: noop, scripted, diagnoser-scripted "
+        "(diagnoser: after the LLM adapter lands)"
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m evals.harness", description=__doc__.split("\n")[0])
-    p.add_argument("--agent", default="scripted", help="noop | scripted")
+    p.add_argument("--agent", default="scripted", help="noop | scripted | diagnoser-scripted")
     p.add_argument("--faults", default="all", help='"all", ids "a,b", or "cat:config"')
     p.add_argument("--runs", type=int, default=1)
     p.add_argument(

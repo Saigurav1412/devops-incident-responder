@@ -70,3 +70,18 @@ def test_markdown_lists_every_fault_and_invalid_count():
     )
     assert "| f1 |" in md and "| f2 |" in md and "invalid injects (excluded): 3" in md
     assert "Resolved 1/2" in md
+
+
+def test_gave_up_but_healed_is_counted_separately():
+    # Agent escalated after its own health check failed too early; the oracle saw the stack
+    # come back. Still "resolved" (oracle decides), but reported so the rate isn't overstated.
+    rs = [
+        rec(resolved=True, outcome="resolved", agent_outcome="escalated"),
+        rec(resolved=True, outcome="resolved", agent_outcome="budget_exceeded"),
+        rec(resolved=True, outcome="resolved", agent_outcome="resolved"),
+        rec(resolved=False, outcome="escalated", agent_outcome="escalated"),
+    ]
+    o = summarize(rs)["overall"]
+    assert o["resolved"] == 3 and o["gave_up_but_healed"] == 2
+    md = render_markdown(summarize(rs), title="t", agent="a", config={}, invalid=0)
+    assert "gave up but healed 2" in md and "Gave up, healed" in md
