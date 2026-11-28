@@ -526,3 +526,17 @@ def test_the_output_window_counts_merged_entries():
     with_output = [e for e in entries if "stdout_tail" in e]
     assert len(with_output) == RECENT_OBSERVATIONS
     assert entries[-1]["repeated"] == 30
+
+
+def test_repeats_merge_even_when_their_durations_differ():
+    # Om's probe on #18: real curls never take the same number of ms (12, 11, 12, 16, 11 in his
+    # live WSL log). Timing isn't part of "the same result".
+    curls = [
+        failed_curl(i).model_copy(
+            update={"result": failed_curl(i).result.model_copy(update={"duration_ms": ms})}
+        )
+        for i, ms in enumerate([12, 11, 12, 16, 11], start=1)
+    ]
+    entries = _entries(render_incident(state(observations=curls), LIMITS, NONCE))
+    assert len(entries) == 1
+    assert entries[0]["repeated"] == 5 and entries[0]["n"] == 1 and entries[0]["n_last"] == 5
