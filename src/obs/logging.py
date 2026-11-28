@@ -43,12 +43,21 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+# Third-party loggers that are chatty at INFO: httpx logs every request line, and the a2a SDK logs
+# the executor's whole Agent Card on every fetch. Our own structured lines already record each
+# executor call (diagnoser/a2a_client.py), so nothing we rely on is lost; their warnings and
+# errors still come through. (Agreed with Om on PR #20.)
+QUIET_LOGGERS = ("a2a", "httpx", "httpcore")
+
+
 def configure_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
     root.handlers[:] = [handler]  # replace, so calling twice doesn't double every line
     root.setLevel(level)
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:
