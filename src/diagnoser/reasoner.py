@@ -237,15 +237,23 @@ def _same_result(a: Observation, b: Observation) -> bool:
     WHY: check_health retries its fixed curl (PR #16), so a fix that didn't work leaves up to ~11
     identical observations. Listed one by one they would fill the output window and push the
     diagnostic evidence out of the prompt right when the replan needs it. Only exact repeats are
-    merged: a different exit code, state or output starts a new entry.
+    merged: a different exit code, state or output starts a new entry. Timing is ignored:
+    real curls never take the same number of ms (Om's live log on #18: 12, 11, 12, 16, 11), and
+    the prompt doesn't show `duration_ms` anyway, so ignoring it loses nothing the model sees.
     """
     return (
         a.skill == b.skill
         and a.request.model_dump(exclude={"approval_token"})
         == b.request.model_dump(exclude={"approval_token"})
         and a.state == b.state
-        and a.result == b.result
+        and _result_key(a) == _result_key(b)
     )
+
+
+def _result_key(o: Observation) -> Any:
+    """The observation's result minus its timing (what "the same answer" means here)."""
+    r = o.result
+    return r.model_dump(exclude={"duration_ms"}) if isinstance(r, CommandResult) else r
 
 
 def _merge_repeats(observations: list[Observation]) -> list[tuple[int, int, Observation]]:

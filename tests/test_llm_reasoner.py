@@ -552,3 +552,17 @@ def test_failed_attempts_keep_their_split_including_a_failed_proposal():
     )
     b = done["budget"]
     assert (b.tokens, b.tokens_in, b.tokens_out) == (600, 500, 100)
+
+
+def test_repeats_merge_even_when_their_durations_differ():
+    # Om's probe on #18: real curls never take the same number of ms (12, 11, 12, 16, 11 in his
+    # live WSL log). Timing isn't part of "the same result".
+    curls = [
+        failed_curl(i).model_copy(
+            update={"result": failed_curl(i).result.model_copy(update={"duration_ms": ms})}
+        )
+        for i, ms in enumerate([12, 11, 12, 16, 11], start=1)
+    ]
+    entries = _entries(render_incident(state(observations=curls), LIMITS, NONCE))
+    assert len(entries) == 1
+    assert entries[0]["repeated"] == 5 and entries[0]["n"] == 1 and entries[0]["n_last"] == 5
