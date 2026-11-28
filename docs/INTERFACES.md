@@ -103,8 +103,9 @@ rather than store a `verified` record for a fix that didn't run.
   `remediate` skill descriptions of its Agent Card, §2.1) + the role prompt. User message = the incident.
 - Untrusted text (alert summary, memory records, hypothesis statements, observations) reaches the model
   only JSON-encoded inside `===BEGIN/END UNTRUSTED DATA <nonce>===` blocks, with a fresh random nonce per
-  call. Approval tokens are never rendered. Output tails are capped (2,000 chars per stream); only the
-  last 12 observations show output.
+  call. Approval tokens are never rendered. Output tails are capped (2,000 chars per stream). Identical
+  consecutive observations (same request, same result, e.g. `check_health` retries) are merged into one
+  entry with `n`, `n_last`, `repeated`; only the last 12 entries show output.
 - Answers must validate against strict schemas (`PlanAnswer`, `CommandAnswer`, `AssessAnswer`,
   `ProposeAnswer`: unknown fields forbidden, bounded strings, params as `[{name, value}]`). One repair
   turn, then a safe default: plan `[]` (→ escalate), command `None`, assess `[]` (no change), propose
