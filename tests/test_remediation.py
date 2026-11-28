@@ -4,6 +4,7 @@ tests/test_remediation_docker.py runs the real fixes against the live stack."""
 
 import asyncio
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,11 @@ def target(tmp_path):
 def make(target, runner=None, store=None):
     runner = runner or RecordingRunner()
     rem = Remediator(
-        runner, KEY, store or IdempotencyStore(), target_dir=target, clock=lambda: T0 + 10
+        runner,
+        KEY,
+        store if store is not None else IdempotencyStore(),
+        target_dir=target,
+        clock=lambda: T0 + 10,
     )
     return rem, runner
 
@@ -327,3 +332,54 @@ def test_policy_refuses_actions_outside_the_catalog(tmp_path):
     p.write_text(yaml.safe_dump(data))
     with pytest.raises(ValueError, match="not in contracts.catalog"):
         load_policy(p)
+
+
+# --- IdempotencyStore across threads (Sai, #20: TestClient runs the app in a worker thread) ----
+
+
+def _outcome(n: int) -> RunOutcome:
+    return RunOutcome(
+        "completed",
+        CommandResult(exit_code=0, stdout=f"{n}", stderr="", truncated=False, duration_ms=1),
+        "remediate.done",
+    )
+
+
+@pytest.mark.parametrize("where", ["memory", "file"])
+def test_store_created_in_one_thread_works_in_another(tmp_path, where):
+    store = IdempotencyStore(":memory:" if where == "memory" else tmp_path / "s.sqlite3")
+    errors = []
+
+    def use():
+        try:
+            store.begin("k1", "h1")
+            store.finish("k1", _outcome(1))
+        except Exception as e:  # noqa: BLE001 (hand any failure to the test thread)
+            errors.append(e)
+
+    th = threading.Thread(target=use)
+    th.start()
+    th.join()
+    assert errors == []
+    hash_, status, raw = store.get("k1")
+    assert (hash_, status) == ("h1", "done") and raw is not None
+
+
+def test_store_survives_many_threads_at_once():
+    store = IdempotencyStore()
+    errors = []
+
+    def use(n):
+        try:
+            store.begin(f"k{n}", f"h{n}")
+            store.finish(f"k{n}", _outcome(n))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=use, args=(n,)) for n in range(32)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert errors == []
+    assert all(store.get(f"k{n}")[1] == "done" for n in range(32))
