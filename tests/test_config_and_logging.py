@@ -106,3 +106,21 @@ def test_key_errors_never_contain_the_value(monkeypatch, tmp_path):
     with pytest.raises(ValueError) as exc:
         _settings_with_key(monkeypatch, tmp_path, secret_ish).approval_key_bytes()
     assert secret_ish not in str(exc.value)
+
+
+def test_chatty_third_party_loggers_are_quiet_but_keep_warnings(capsys):
+    import logging
+
+    from obs.logging import configure_logging
+
+    configure_logging("INFO")
+    try:
+        logging.getLogger("a2a.client.card_resolver").info("Successfully fetched agent card data")
+        logging.getLogger("httpx").info("HTTP Request: GET http://x")
+        logging.getLogger("httpx").warning("httpx warning still shown")
+        logging.getLogger("diagnoser.a2a_client").info("a2a call done")
+        out = capsys.readouterr().out
+    finally:
+        logging.getLogger().handlers.clear()
+    assert "agent card" not in out and "HTTP Request" not in out
+    assert "httpx warning still shown" in out and "a2a call done" in out

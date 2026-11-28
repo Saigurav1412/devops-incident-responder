@@ -133,6 +133,16 @@ and a Slack notice.
 
 Implemented in `src/diagnoser/service.py` (`create_service(deps, poster)`). One Cloud Run service.
 
+**Running it:** `uv run python -m diagnoser [--host 127.0.0.1] [--port 8000]` (default port: `$PORT`,
+else 8000). `src/diagnoser/wiring.py` builds the real objects from config (`build_deps_from_settings`):
+`LLMReasoner` over `OpenAIChatModel`, `A2AExecutorClient(EXECUTOR_URL)`, `HttpxSlackPoster`, in-process
+memory and checkpoints (Firestore pending, so a restart loses paused incidents). Before binding a port
+it checks the config and exits with status 2, listing **every** problem (never a secret value): LLM
+model/key, intake token, Slack token/secret/channel, approver allowlist, approval key, executor auth.
+Executor auth today is the local dev mode only: `EXECUTOR_DEV_TOKEN` (env var, not `.env`, ≥ 32 chars,
+the value the executor was started with), sent only to a localhost `EXECUTOR_URL`. Google ID tokens to the
+VM are not built yet (GCP on hold). HTTP clients are closed on shutdown.
+
 | Endpoint | Auth | Request | Response |
 |---|---|---|---|
 | `POST /incidents` | `Authorization: Bearer <INCIDENT_API_TOKEN>` | an `Alert` (§4.1) as JSON; unknown fields, naive datetimes, `summary` > 500 chars → 422 | `202 {"incident_id", "status_url"}`; the graph runs in the background |
@@ -495,5 +505,5 @@ repeat_of: null           # set to another fault id for memory-ablation pairs
 | `MEMORY_ENABLED`, `MAX_HYPOTHESES` | diagnoser | ablation switches |
 | `ALLOWED_DIAGNOSER_SA`, `MAX_OUTPUT_BYTES` | executor | |
 | `EXECUTOR_AUDIENCE`, `EXECUTOR_STATE_PATH` | executor | ID-token audience (empty → `EXECUTOR_URL`); sqlite idempotency store on a persistent disk |
-| `EXECUTOR_DEV_TOKEN` | executor | local dev only, ≥ 32 chars, refused unless bound to 127.0.0.1; never set on the VM |
+| `EXECUTOR_DEV_TOKEN` | executor, diagnoser | local dev only, ≥ 32 chars, read from the environment (not `.env`); executor refuses it unless bound to 127.0.0.1, diagnoser only sends it to a localhost `EXECUTOR_URL`; never set on the VM or Cloud Run |
 | `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | both | |
