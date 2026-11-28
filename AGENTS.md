@@ -37,7 +37,7 @@ src/
   approval/     Slack app, webhook, token minting (Sai)
   prompts/      versioned prompt files, one per role (Sai)
   obs/          structured logging, LangSmith setup (both)
-  config.py     typed env config (both)
+  config/       typed env config, `from config import get_settings` (both)
 target/         docker-compose stack the agent repairs (Om)
 evals/          faults/, harness.py, adversarial/, results/<date>/ (Om)
 deploy/         cloudrun/ (Sai), vm/ (Om)
@@ -51,7 +51,7 @@ notes/          personal process notes: om.md, sai.md (feed each PROCESS_LOG)
 ## Ownership
 
 Change files in the other person's folders only through a PR they review. Shared folders
-(`contracts/`, `config.py`, `obs/`) always need the other person's review.
+(`contracts/`, `config/`, `obs/`) always need the other person's review.
 
 ## Commands
 
