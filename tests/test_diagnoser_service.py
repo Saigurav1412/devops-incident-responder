@@ -67,7 +67,11 @@ class Service:
     def __init__(self, reasoner=None, executor=None, poster=None, **settings_overrides):
         self.clock = FakeClock()
         self.settings = make_settings(
-            **({"incident_api_token": API_TOKEN, "slack_channel_id": "C_INC"} | settings_overrides)
+            # health_settle_s=0: one curl per health check (see test_diagnoser_graph.settings).
+            **(
+                {"incident_api_token": API_TOKEN, "slack_channel_id": "C_INC", "health_settle_s": 0}
+                | settings_overrides
+            )
         )
         self.executor = executor or FakeExecutorClient(clock=self.clock)
         self.poster = poster or RecordingPoster()

@@ -62,8 +62,15 @@ def hyp(statement: str, status: str = "open", hid: str = "h1") -> Hypothesis:
 
 def settings(**overrides) -> Settings:
     # _env_file=None: never read a developer's real .env in tests.
-    base = {"approver_allowlist": APPROVER}
+    # health_settle_s=0: one curl per health check, so `health=[False, True]` in these tests
+    # still means "the first fix failed, the replanned one worked". The grace period has its
+    # own tests (test_health_grace_*).
+    base = {"approver_allowlist": APPROVER, "health_settle_s": 0}
     return Settings(_env_file=None, **(base | overrides))
+
+
+async def no_sleep(_seconds: float) -> None:
+    """check_health's wait between retries, without waiting."""
 
 
 def make_deps(reasoner, *, executor=None, memory=None, clock=None, **cfg):
@@ -74,6 +81,7 @@ def make_deps(reasoner, *, executor=None, memory=None, clock=None, **cfg):
         memory=memory if memory is not None else InMemoryIncidentMemory(),
         settings=settings(**cfg),
         clock=clock,
+        sleep=no_sleep,
     )
 
 
@@ -717,3 +725,86 @@ def test_fix_applied_needs_completed_state_and_remediate_skill():
     assert fix_applied(applied)
     assert not fix_applied(applied.model_copy(update={"state": "failed"}))
     assert not fix_applied(applied.model_copy(update={"skill": "diagnose"}))
+
+
+# --- check_health grace period ------------------------------------------------------------------
+# Found in the first live eval run (2026-11-26): one curl ~20 ms after the fix refuted correct
+# fixes, because a restarted service needs a few seconds to answer.
+
+
+class RecordingSleep:
+    def __init__(self):
+        self.waits: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)
+
+
+def grace_deps(health, *, sleep=None, **cfg):
+    deps = make_deps(happy_reasoner(), executor=logs_executor(health=health), **cfg)
+    deps.sleep = sleep or RecordingSleep()
+    return deps
+
+
+def test_health_grace_a_slow_service_is_not_refuted():
+    # Not answering for the first 3 curls, then healthy: ONE approval, resolved, no replan.
+    deps = grace_deps([False, False, False, True], health_settle_s=20, health_retry_initial_s=1)
+    graph, paused = start(deps)
+    done = decide(graph, paused["__interrupt__"][0].value["proposed"]["action_id"])
+    assert done["outcome"] == "resolved"
+    assert done["budget"].replans == 0
+    assert deps.executor.health_checks == 4
+    assert deps.sleep.waits == [1, 2, 4]  # backoff between tries, none after the passing one
+
+
+def test_health_grace_is_bounded_by_the_settle_window():
+    # Never healthy: waits 1, 2, 4, 8 (15 s; 16 more would pass 20), so 5 curls, then refuted.
+    deps = grace_deps([False], health_settle_s=20, health_retry_initial_s=1, max_replans=0)
+    graph, paused = start(deps)
+    done = decide(graph, paused["__interrupt__"][0].value["proposed"]["action_id"])
+    assert deps.executor.health_checks == 5
+    assert deps.sleep.waits == [1, 2, 4, 8]
+    assert done["outcome"] == "escalated"
+    assert done["hypotheses"][0].status == "refuted"
+
+
+def test_health_grace_counts_every_curl_and_respects_max_tool_calls():
+    # The tool-call cap wins over the settle window: logs (1) + fix (1) leave 3 of 5 for curls.
+    # max_replans=0: the incident stops right after the check, so the budget shows exactly what
+    # check_health charged (with replans, later steps would fill the cap either way).
+    deps = grace_deps(
+        [False], health_settle_s=60, health_retry_initial_s=1, max_tool_calls=5, max_replans=0
+    )
+    graph, paused = start(deps)
+    done = decide(graph, paused["__interrupt__"][0].value["proposed"]["action_id"])
+    assert deps.executor.health_checks == 3
+    assert done["budget"].tool_calls == 5  # logs + fix + 3 curls, every curl counted
+    assert done["outcome"] == "escalated"
+
+
+def test_health_grace_does_not_retry_a_rejected_health_check():
+    # A REJECTED curl (HEALTH_URL not on the executor's allowlist) won't change on retry.
+    deps = grace_deps([True], health_settle_s=20, health_url="http://127.0.0.1:8088/other")
+    graph, paused = start(deps)
+    decide(graph, paused["__interrupt__"][0].value["proposed"]["action_id"])
+    curls = [c for c in deps.executor.calls if getattr(c, "command", [""])[0] == "curl"]
+    assert len(curls) == 1
+    assert deps.sleep.waits == []
+
+
+def test_health_grace_zero_means_one_curl():
+    deps = grace_deps([False, True], health_settle_s=0, max_replans=0)
+    graph, paused = start(deps)
+    done = decide(graph, paused["__interrupt__"][0].value["proposed"]["action_id"])
+    assert deps.executor.health_checks == 1 and done["outcome"] == "escalated"
+
+
+def test_health_check_waits_back_off_within_the_settle_window():
+    from diagnoser.nodes import health_check_waits
+
+    assert health_check_waits(20, 1) == [1, 2, 4, 8]  # curls at 0, 1, 3, 7, 15 s
+    assert health_check_waits(20, 2) == [2, 4, 8]
+    assert health_check_waits(0, 1) == []  # 0 settle = one curl
+    assert health_check_waits(0.5, 1) == []  # first wait doesn't fit
+    for settle, initial in [(20, 1), (60, 1), (7, 1), (120, 0.5)]:
+        assert sum(health_check_waits(settle, initial)) <= settle
