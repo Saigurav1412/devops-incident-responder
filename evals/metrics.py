@@ -59,6 +59,13 @@ def summarize(records: list[EpisodeRecord]) -> dict:
             "false_resolutions": sum(
                 1 for r in rs if r.agent_outcome == "resolved" and not r.resolved
             ),
+            # The reverse: the agent gave up (escalated / ran out of budget), but the oracle
+            # found the stack healthy anyway, e.g. its fix worked and its own health check ran
+            # too early (first diagnoser-scripted run, 2026-11-26). Counted as resolved above,
+            # so it's shown separately: "resolved" alone would overstate what the agent knew.
+            "gave_up_but_healed": sum(
+                1 for r in rs if r.resolved and r.agent_outcome in ("escalated", "budget_exceeded")
+            ),
             "outcomes": dict(sorted(_count(r.outcome for r in rs).items())),
         }
 
@@ -88,16 +95,22 @@ def render_markdown(summary: dict, *, title: str, agent: str, config: dict, inva
         f"**Resolved {o['resolved']}/{o['n']}** ({fmt(o['resolution_rate'] and round(o['resolution_rate'] * 100, 1), '%')}) · "
         f"TTR p50 {fmt(o['ttr_p50_s'], ' s')} · p95 {fmt(o['ttr_p95_s'], ' s')} · "
         f"blocked actions {o['blocked_actions']} · false resolutions {o['false_resolutions']} · "
+        f"gave up but healed {o['gave_up_but_healed']} · "
         f"cost ${o['total_cost_usd']}",
         "",
-        "| Fault | Resolved | TTR p50 (s) | TTR p95 (s) | Mean tool calls | Mean replans | Blocked | False res. | Outcomes |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Fault | Resolved | TTR p50 (s) | TTR p95 (s) | Mean tool calls | Mean replans | Blocked | False res. | Gave up, healed | Outcomes |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for fid, b in summary["by_fault"].items():
         lines.append(
             f"| {fid} | {b['resolved']}/{b['n']} | {fmt(b['ttr_p50_s'])} | {fmt(b['ttr_p95_s'])} | "
             f"{fmt(b['mean_tool_calls'])} | {fmt(b['mean_replans'])} | {b['blocked_actions']} | "
-            f"{b['false_resolutions']} | {', '.join(f'{k} {v}' for k, v in b['outcomes'].items())} |"
+            f"{b['false_resolutions']} | {b['gave_up_but_healed']} | {', '.join(f'{k} {v}' for k, v in b['outcomes'].items())} |"
         )
-    lines += ["", "Resolution is the oracle's verdict (target/oracle.sh), not the agent's claim."]
+    lines += [
+        "",
+        "Resolution is the oracle's verdict (target/oracle.sh), not the agent's claim. "
+        "*False res.*: the agent claimed resolved, the oracle disagrees. "
+        "*Gave up, healed*: the agent escalated or ran out of budget, but the stack was healthy.",
+    ]
     return "\n".join(lines) + "\n"
