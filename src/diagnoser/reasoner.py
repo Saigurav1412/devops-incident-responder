@@ -28,6 +28,7 @@ import json
 import re
 import secrets
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -345,6 +346,22 @@ def render_incident(state: IncidentState, settings_view: dict[str, int], nonce: 
 # The reasoner
 # ---------------------------------------------------------------------------------------------
 
+
+@dataclass
+class _Usage:
+    """Tokens spent on one question, all attempts included (failed ones too)."""
+
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.tokens_in + self.tokens_out
+
+    def reasoned[T](self, value: T) -> Reasoned[T]:
+        return Reasoned(value, self.total, self.tokens_in, self.tokens_out)
+
+
 _ROLES = {
     "plan": ("diagnoser_planner", PlanAnswer),
     "next_command": ("diagnoser_commander", CommandAnswer),
@@ -404,7 +421,7 @@ class LLMReasoner:
 
     async def _ask[A: _Answer](
         self, role: str, state: IncidentState, model: type[A]
-    ) -> tuple[A | None, int]:
+    ) -> tuple[A | None, _Usage]:
         """One question to the model, with up to `repair_attempts` corrections.
 
         Returns (answer or None, tokens used). Never raises for model or policy failures: the
@@ -415,7 +432,7 @@ class LLMReasoner:
             policy = await self._policy_text()
         except ExecutorClientError as exc:
             log.warning("executor policy unavailable", extra={**ctx, "error": str(exc)})
-            return None, 0
+            return None, _Usage()
 
         system = (
             self._common.text.format(
@@ -430,7 +447,7 @@ class LLMReasoner:
             ChatMessage("user", render_incident(state, self._limits, self._nonce())),
         ]
         schema = model.model_json_schema()
-        tokens = 0
+        usage = _Usage()
         for attempt in range(1 + self._repair_attempts):
             try:
                 result = await self._chat.complete(
@@ -442,8 +459,9 @@ class LLMReasoner:
             except ChatModelError as exc:
                 # Not retried here: provider-level retries/backoff are the adapter's job.
                 log.warning("llm call failed", extra={**ctx, "attempt": attempt, "error": str(exc)})
-                return None, tokens
-            tokens += result.tokens
+                return None, usage
+            usage.tokens_in += result.input_tokens
+            usage.tokens_out += result.output_tokens
             try:
                 answer = parse_answer(result.text, model)
             except ValueError as exc:
@@ -459,29 +477,29 @@ class LLMReasoner:
                     ),
                 ]
                 continue
-            log.info("llm answer ok", extra={**ctx, "attempt": attempt, "tokens": tokens})
-            return answer, tokens
-        return None, tokens
+            log.info("llm answer ok", extra={**ctx, "attempt": attempt, "tokens": usage.total})
+            return answer, usage
+        return None, usage
 
     async def plan(self, state: IncidentState) -> Reasoned[list[Hypothesis]]:
-        answer, tokens = await self._ask("plan", state, PlanAnswer)
+        answer, usage = await self._ask("plan", state, PlanAnswer)
         if answer is None:
-            return Reasoned([], tokens)
+            return usage.reasoned([])
         # Placeholder ids: plan_hypotheses renumbers them (h1, h2, ...) in code.
         hypotheses = [
             Hypothesis(id=f"new{i + 1}", statement=h.statement, evidence_needed=h.evidence_needed)
             for i, h in enumerate(answer.hypotheses)
         ]
-        return Reasoned(hypotheses, tokens)
+        return usage.reasoned(hypotheses)
 
     async def next_command(self, state: IncidentState) -> Reasoned[list[str] | None]:
-        answer, tokens = await self._ask("next_command", state, CommandAnswer)
-        return Reasoned(answer.command if answer else None, tokens)
+        answer, usage = await self._ask("next_command", state, CommandAnswer)
+        return usage.reasoned(answer.command if answer else None)
 
     async def assess(self, state: IncidentState) -> Reasoned[list[Hypothesis]]:
-        answer, tokens = await self._ask("assess", state, AssessAnswer)
+        answer, usage = await self._ask("assess", state, AssessAnswer)
         if answer is None:
-            return Reasoned([], tokens)  # omitted = unchanged
+            return usage.reasoned([])  # omitted = unchanged
         current = {h.id: h for h in state["hypotheses"]}
         assessed = []
         for a in answer.assessments:
@@ -496,16 +514,21 @@ class LLMReasoner:
                 assessed.append(
                     known.model_copy(update={"status": a.status, "confidence": a.confidence})
                 )
-        return Reasoned(assessed, tokens)
+        return usage.reasoned(assessed)
 
     async def propose(self, state: IncidentState) -> Reasoned[FixProposal]:
-        answer, tokens = await self._ask("propose", state, ProposeAnswer)
+        answer, usage = await self._ask("propose", state, ProposeAnswer)
         if answer is None:
-            raise ReasonerError("no valid fix proposal from the model", tokens=tokens)
+            raise ReasonerError(
+                "no valid fix proposal from the model",
+                tokens=usage.total,
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
+            )
         proposal = FixProposal(
             action=answer.action,
             params={p.name: p.value for p in answer.params},
             rationale=answer.rationale,
             rollback=answer.rollback,
         )
-        return Reasoned(proposal, tokens)
+        return usage.reasoned(proposal)

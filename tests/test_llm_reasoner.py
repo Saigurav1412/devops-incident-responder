@@ -528,6 +528,32 @@ def test_the_output_window_counts_merged_entries():
     assert entries[-1]["repeated"] == 30
 
 
+# ---------------------------------------------------------------------------------------------
+# Input/output token split reaches the budget (for cost reporting, Om's #15 ask)
+# ---------------------------------------------------------------------------------------------
+
+
+def test_token_split_reaches_the_budget_through_the_graph():
+    deps, _, _ = _deps([PLAN, COMMAND, CONFIRM, PROPOSE])
+    graph = build_graph(deps)
+    paused = run(
+        graph.ainvoke(new_incident_state(state()["alert"], T0, "inc-1"), thread_config("inc-1"))
+    )
+    b = paused["budget"]
+    assert (b.tokens, b.tokens_in, b.tokens_out) == (480, 400, 80)  # 4 calls x (100 in, 20 out)
+
+
+def test_failed_attempts_keep_their_split_including_a_failed_proposal():
+    deps, _, _ = _deps([PLAN, COMMAND, CONFIRM, "bad", "bad again"])
+    done = run(
+        build_graph(deps).ainvoke(
+            new_incident_state(state()["alert"], T0, "inc-1"), thread_config("inc-1")
+        )
+    )
+    b = done["budget"]
+    assert (b.tokens, b.tokens_in, b.tokens_out) == (600, 500, 100)
+
+
 def test_repeats_merge_even_when_their_durations_differ():
     # Om's probe on #18: real curls never take the same number of ms (12, 11, 12, 16, 11 in his
     # live WSL log). Timing isn't part of "the same result".

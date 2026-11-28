@@ -55,3 +55,8 @@
 
 ## 2026-11-27 — reasoner follow-ups
 - AI-generated (Claude Code): lossless merging of identical consecutive observations in the prompt, so #16's health retries don't push diagnostic evidence out of the 12-entry window; the `is None` fix Om spotted. Tests written first; 3 mutations killed.
+
+## 2026-11-27 — OpenAI-compatible adapter + token split
+- AI-generated (Claude Code): `openai_chat.py`, the Budget in/out split, settings, tests. My call: one adapter for OpenAI and local servers, strict schema with a json_object fallback.
+- Verified by: the real openai SDK against a mock transport (23 tests), an end-to-end graph run through the adapter, strict_schema checked equal to the SDK's own helper, 10 mutation checks.
+- Went right: before writing the strict-schema code I read the SDK's own helper instead of guessing; my #14 worry (that maxLength/pattern must be stripped) looks unfounded, since the SDK keeps them. Still unverified against the live API.

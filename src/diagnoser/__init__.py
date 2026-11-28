@@ -10,11 +10,12 @@ Layout:
   a2a_client.py  the real ExecutorClient: A2A v1.0 SendMessage to the executor, Task -> Observation;
              also serves the executor's policy summaries from its Agent Card
   llm.py     the ChatModel seam (provider-independent): messages in, text + token usage out
+  openai_chat.py  ChatModel for any OpenAI-compatible API (OpenAI, Ollama), via LLM_BASE_URL
   reasoner.py  the LLM-backed Reasoner: fenced prompt rendering, strict answer schemas, repair
              attempt, safe defaults (prompts in src/prompts/)
   service.py the HTTP service: POST/GET /incidents + the Slack webhook (FastAPI)
 
-Not built yet: a ChatModel adapter for a real provider (waits on the LLM decision in DECISIONS.md).
+Not built yet: build_deps_from_settings() / a runnable entry point wiring the real reasoner.
 
 Shared shapes come from `contracts`; never redefine them here.
 """
