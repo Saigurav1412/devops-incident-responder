@@ -60,3 +60,36 @@ wait_healthy() {
 }
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+
+# HTTP status of GET /health through the proxy ("000" if nothing answered).
+health_code() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$(stack_var PROXY_PORT)/health"
+}
+
+# Body of GET /health through the proxy (empty if nothing answered).
+health_body() {
+  curl -s --max-time 5 "http://127.0.0.1:$(stack_var PROXY_PORT)/health"
+}
+
+# Container id of a compose service (running or not).
+service_container() {
+  tc ps -aq "$1"
+}
+
+# confirm SECONDS DESCRIPTION CMD...: retry CMD once a second until it succeeds or time runs out.
+# Every inject.sh ends with one, so a fault that silently didn't take FAILS the inject instead of
+# producing a "resolved in 0 s" episode. The harness then records the episode as invalid.
+confirm() {
+  local timeout="$1" desc="$2" waited=0
+  shift 2
+  while ((waited < timeout)); do
+    if "$@" >/dev/null 2>&1; then
+      log "confirmed: $desc"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  log "FAULT NOT CONFIRMED after ${timeout}s: $desc"
+  return 1
+}

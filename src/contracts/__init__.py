@@ -34,7 +34,9 @@ from contracts.models import (
 
 # Bump on every change to a model in this package (semver-ish: MAJOR.MINOR).
 # 0.x while the contracts are still [proposed] in docs/INTERFACES.md.
-CONTRACT_VERSION = "0.2"  # 0.2: REMEDIATION_ACTIONS names in contracts.catalog
+CONTRACT_VERSION = (
+    "0.3"  # 0.3: FaultSpec.expected_params; EpisodeRecord.approval_wait_s, agent_outcome
+)
 
 __all__ = [
     "CONTRACT_VERSION",

@@ -69,7 +69,7 @@ packages = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Make `src/` importable in tests even before the project is installed.
-pythonpath = ["src"]
+pythonpath = ["src", "."]  # src/ packages + the evals/ package at the repo root
 addopts = "-ra --strict-markers"
 markers = [
     "docker: needs the target stack running; set RUN_DOCKER_TESTS=1 (see docs/walkthroughs/phase1-runner.md)",
@@ -91,6 +91,7 @@ ignore = ["E501"]
 [tool.ruff.lint.isort]
 # Test modules that other tests import from (shared lists/fakes). Declared explicitly so import
 # order is the same in every checkout; ruff guessed differently once the diagnoser code was merged.
+known-first-party = ["evals"]  # the eval package lives at the repo root, not under src/
 known-local-folder = ["test_allowlist", "test_remediation"]
 
 [tool.ruff.lint.per-file-ignores]

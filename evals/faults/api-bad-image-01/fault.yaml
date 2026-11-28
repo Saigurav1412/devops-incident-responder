@@ -5,4 +5,7 @@ description: >
   restarts it in a loop and the proxy returns 502. The api logs show the startup error, so the
   fix is to roll back to the previous tag, not to restart the container.
 expected_fix: rollback_image   # params: service=api, tag=good
+expected_params:
+  service: api
+  tag: good
 timeout_s: 300
